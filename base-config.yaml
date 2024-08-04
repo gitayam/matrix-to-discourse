@@ -13,4 +13,8 @@ discourse_api_key: "discourse_api_key"
 discourse_api_username: "discourse_api_username"
 discourse_base_url: "https://discourse.example.com"
 # To get your category ID, go to https://discourse.example.com/c/your-category-name.json
+matrix_to_discourse_topic:
+  "!roomID1:server": "topic_id_1"
+  "!roomID2:server": "topic_id_2"
 unsorted_category_id: 9 # The category ID for the unsorted category
+
