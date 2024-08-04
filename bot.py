@@ -146,8 +146,31 @@ class MatrixToDiscourseBot(Plugin):
                     response_json = await response.json()
                     if response.status == 200:
                         search_results = response_json.get("topics", [])
+
+                        # Safely get keys with default values
+                        for result in search_results:
+                            result['views'] = result.get('views', 0)
+                            result['created_at'] = result.get('created_at', '1970-01-01T00:00:00Z')
+
+                        # Sort search results by created_at for most recent and by views for most seen
+                        sorted_by_recent = sorted(search_results, key=lambda x: x['created_at'], reverse=True)
+                        sorted_by_views = sorted(search_results, key=lambda x: x['views'], reverse=True)
+
+                        # Select top 2 most recent and top 3 most seen
+                        top_recent = sorted_by_recent[:2]
+                        top_seen = sorted_by_views[:3]
+
+                        def format_results(results):
+                            return "\n".join([f"* [{result['title']}]({self.config['discourse_base_url']}/t/{result['slug']}/{result['id']})" for result in results])
+
+                        result_msg = (
+                            "**Top 2 Most Recent:**\n" +
+                            format_results(top_recent) +
+                            "\n\n**Top 3 Most Seen:**\n" +
+                            format_results(top_seen)
+                        )
+
                         if search_results:
-                            result_msg = "\n".join([f"{result['title']}: {self.config['discourse_base_url']}/t/{result['slug']}/{result['id']}" for result in search_results])
                             await evt.reply(f"Search results:\n{result_msg}")
                         else:
                             await evt.reply("No results found.")
