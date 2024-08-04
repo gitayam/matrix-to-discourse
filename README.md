@@ -49,6 +49,9 @@ unsorted_category_id: 9
 ### `!fpost`
 
 Creates a post on the Discourse forum using the replied-to message's content.
+- **Usage:** `!fpost` 
+This will prompt GPT to generate a title based on the body. 
+#TODO gracefully handle missing gpt api
 
 - **Usage:** `!fpost [title]`
 - **Example:**
