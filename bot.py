@@ -2,8 +2,7 @@ import asyncio
 import json
 import re
 from datetime import datetime
-from typing import Type, Deque, Dict, Generator
-from collections import deque
+from typing import Type, Dict
 from mautrix.client import Client
 from mautrix.types import Format, TextMessageEventContent, EventType, RelationType
 from maubot import Plugin, MessageEvent
@@ -23,6 +22,7 @@ class Config(BaseProxyConfig):
         helper.copy("discourse_api_username")
         helper.copy("discourse_base_url")
         helper.copy("unsorted_category_id")
+        helper.copy("matrix_to_discourse_topic")
 
 class MatrixToDiscourseBot(Plugin):
     async def start(self) -> None:
@@ -60,9 +60,12 @@ class MatrixToDiscourseBot(Plugin):
                 title = "Default Title"  # Fallback title if generation fails
             self.log.info(f"Generated Title: {title}")
 
+            # Get the topic ID based on the room ID
+            topic_id = self.config["matrix_to_discourse_topic"].get(evt.room_id, self.config["unsorted_category_id"])
+
             post_url, error = await self.create_post(
                 self.config["discourse_base_url"], 
-                self.config["unsorted_category_id"], 
+                topic_id, 
                 title, 
                 message_body
             )
