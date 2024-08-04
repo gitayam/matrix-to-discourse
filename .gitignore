@@ -8,7 +8,7 @@ __pycache__/
 
 # Other
 *.html
-
+.DS_Store
 # Distribution / packaging
 .Python
 build/
