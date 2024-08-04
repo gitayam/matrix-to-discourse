@@ -1,0 +1,12 @@
+#base-config.yml
+discourse_api_key: "a8a21514dc11edab80e31276417737c85778ca6c971cedba5400a3662b5709fd"
+discourse_api_username: "sac"
+discourse_base_url: "https://forum.irregularchat.com"
+# Mapping of Matrix room IDs to Discourse category IDs
+# To find the category ID on Discourse, navigate to the category in your Discourse instance.
+# The category ID is the number at the end of the URL. For example, if the URL is:
+# https://your.discourse.instance/c/category-name/2
+# The category ID is 2.
+matrix_to_discourse_topic:
+  "!zSeUldHeuuPDNxfhzi:irregularchat.com": 7
+unsorted_category_id: 9

@@ -1,0 +1,5 @@
+#requirements.txt
+aiohttp
+asyncio
+logging
+maubot

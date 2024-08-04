@@ -1,0 +1,15 @@
+maubot: 0.1.0
+id: com.irregularchat.matrix_to_discourse.demo
+version: 0.0.16
+license: MIT
+modules:
+  - bot
+main_class: MatrixToDiscourseBot
+dependencies:
+  - aiohttp
+  - asyncio
+  - requests
+  - maubot
+config: true
+extra_files:
+  - base-config.yaml
