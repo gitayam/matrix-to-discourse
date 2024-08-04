@@ -3,3 +3,7 @@ aiohttp
 asyncio
 logging
 maubot
+pyyaml
+openai
+maubot
+mautrix-client
