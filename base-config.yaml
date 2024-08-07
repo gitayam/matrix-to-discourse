@@ -16,5 +16,5 @@ discourse_base_url: "https://discourse.example.com"
 matrix_to_discourse_topic:
   "!roomID1:server": "topic_id_1"
   "!roomID2:server": "topic_id_2"
-unsorted_category_id: 9 # The category ID for the unsorted category
+unsorted_category_id: topic_id_9 # The category ID for the unsorted category
 
