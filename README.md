@@ -93,6 +93,8 @@ Searches the Discourse forum for the specified query.
 3. Deploy the bot on your Maubot instance.
 4. Configure the `base-config.yaml` file with your settings.
 
+## Contributing
+To contribute to this project, please see the [Roadmap](./ROADMAP.md) page for a list of features that need to be implemented.
 ## License
 
 This project is licensed under the GPL-3.0 License. See the [LICENSE](./LICENSE) file for details.
