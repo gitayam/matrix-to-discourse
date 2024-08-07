@@ -10,6 +10,8 @@ To use this bot you'll need to have:
 - A Discourse forum that you can post to
 - An OpenAI API key
 
+Download the plugin.mbp file from the releases page and follow the instructions in the Maubot documentation to install the plugin.
+
 You'll upload the plugin to your Maubot instance, configure it with your OpenAI API key, Discourse API key, and Discourse categories and information and then you can use the bot to post messages from Matrix to Discourse and search Discourse from Matrix.
 
 Maubot Instance is typically at : https://matrix.domain.tld/_matrix/maubot/
