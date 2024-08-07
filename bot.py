@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 from typing import Type, Dict
 from mautrix.client import Client
-from mautrix.types import Format, TextMessageEventContent, EventType, RelationType
+from mautrix.types import TextMessageEventContent, EventType, RelationType, MediaMessageEventContent
 from maubot import Plugin, MessageEvent
 from maubot.handlers import command, event
 import aiohttp
@@ -23,6 +23,7 @@ class Config(BaseProxyConfig):
         helper.copy("discourse_base_url")
         helper.copy("unsorted_category_id")
         helper.copy("matrix_to_discourse_topic")
+        helper.copy("fallback_category_id")
 
 class MatrixToDiscourseBot(Plugin):
     async def start(self) -> None:
@@ -51,6 +52,7 @@ class MatrixToDiscourseBot(Plugin):
             # Extract the body of the replied-to message
             replied_event = await evt.client.get_event(evt.room_id, evt.content.get_reply_to())
             message_body = replied_event.content.body
+
             self.log.info(f"Message body: {message_body}")
 
             # Use provided title or generate one using OpenAI
@@ -60,12 +62,12 @@ class MatrixToDiscourseBot(Plugin):
                 title = "Default Title"  # Fallback title if generation fails
             self.log.info(f"Generated Title: {title}")
 
-            # Get the topic ID based on the room ID
-            topic_id = self.config["matrix_to_discourse_topic"].get(evt.room_id, self.config["unsorted_category_id"])
+            # Determine the category ID based on room ID
+            category_id = self.config["matrix_to_discourse_topic"].get(evt.room_id, self.config["fallback_category_id"])
 
             post_url, error = await self.create_post(
                 self.config["discourse_base_url"], 
-                topic_id, 
+                category_id, 
                 title, 
                 message_body
             )
