@@ -2,6 +2,25 @@
 
 A Maubot plugin that allows users to post messages from a Matrix room to a Discourse forum and search the forum.
 
+
+## Typical Use
+To use this bot you'll need to have:
+- Maubot installed and running on your Matrix server
+  - For the most robust and easiest matrix and maubot setup, consider using: https://github.com/spantaleev/matrix-docker-ansible-deploy
+- A Discourse forum that you can post to
+- An OpenAI API key
+
+You'll upload the plugin to your Maubot instance, configure it with your OpenAI API key, Discourse API key, and Discourse categories and information and then you can use the bot to post messages from Matrix to Discourse and search Discourse from Matrix.
+
+Maubot Instance is typically at : https://matrix.domain.tld/_matrix/maubot/
+If you are using the matrix-docker-ansible-deploy, set up using:
+```yml
+matrix_bot_maubot_enabled: true
+matrix_bot_maubot_initial_password: 'secrets_here'
+matrix_bot_maubot_admins:
+  - user: 'secrets_here'
+```
+
 ## Configuration
 
 ### OpenAI API Configuration
@@ -39,8 +58,8 @@ discourse_api_key: "discourse_api_key"
 discourse_api_username: "discourse_api_username"
 discourse_base_url: "https://discourse.example.com"
 matrix_to_discourse_topic:
-  "!roomID1:server": "topic_id_1"
-  "!roomID2:server": "topic_id_2"
+  "!roomID1:server": "27"
+  "!roomID2:server": "4"
 unsorted_category_id: 9
 ```
 
