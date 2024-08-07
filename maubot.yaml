@@ -8,3 +8,9 @@ main_class: MatrixToDiscourseBot
 dependencies:
   - aiohttp
   - maubot
+  - mautrix
+  - openai
+  - pyyaml
+  - requests
+
+
