@@ -1,6 +1,6 @@
 maubot: 0.1.0
 id: com.irregularchat.matrix_to_discourse
-version: 0.1.0.0
+version: 0.1.0.1
 license: GPL-3.0
 modules:
   - bot
