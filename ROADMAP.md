@@ -26,18 +26,22 @@ Thanks for checking out the roadmap for the Matrix to Discourse Bot! This docume
     - [ ] Based on the user's role in the Matrix room.
     - [ ] Based on User ID.
     - [ ] Based on homeserver.
-- [ ] Configuration of Trigger Words
+- [ ] Configuration of Trigger Words.
     - [ ] Allow users to configure trigger words that will trigger the bot to create a post.
     - [ ] Allow users to configure trigger words that will trigger the bot to search for a post.
-- [ ] Configuration of Post Title Generation
-    - [ ] Allow users to configure the title generation GPT Prompt
+- [ ] Configuration of Post Title Generation.
+    - [ ] Allow users to configure the title generation GPT Prompt.
     - [ ] Allow users to disable GPT title generation.
     - [ ] Fallback to a default title if GPT fails.
-- [ ] Direct message support
-    - [ ] Direct message user with the post link as well
-- [ ] Allow More messages as context for post generation
+- [ ] Direct message support.
+    - [ ] Direct message user with the post link as well.
+- [ ] Allow more messages as context for post generation.
     - [ ] Handle media messages from the bridge.
-    Currently signal media is clumped together on signal so a user response is to the first media message not to the text body. 
+        - Currently, Signal media is clumped together on Signal so a user response is to the first media message, not to the text body.
     - [ ] Handle multiple messages in a single reply.
-    - [ ] Post Generation Improvements, GPT for body of post as well using context.
-
+    - [ ] Post Generation Improvements, GPT for body of the post as well using context.
+- [ ] Enhanced Post Summarization Functionality.
+    - [ ] Implement `!fpost -n <number>` to summarize the last `<number>` messages into a post.
+    - [ ] Implement `!fpost -h <hours>`, `-m <minutes>`, `-d <days>` to summarize messages from a specified timeframe.
+    - [ ] Handle situations where the chat history does not go back as far as requested by defaulting to the available range.
+    - [ ] Ensure functionality in disappearing chats by defaulting to the latest available messages up to the specified timeframe.
