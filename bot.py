@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import math
 from datetime import datetime
 from typing import Type, Dict, List
 from mautrix.client import Client
@@ -36,7 +37,6 @@ class MatrixToDiscourseBot(Plugin):
 
     @command.new(name="fpost", require_subcommand=False)
     @command.argument("title", pass_raw=True, required=False)
-    @command.argument("number", pass_raw=True, required=False)
     async def post_to_discourse(self, evt: MessageEvent, title: str = None, number: str = None) -> None:
         self.log.info("Command !fpost triggered.")
         await evt.reply("Creating a Forum post...")
@@ -44,7 +44,7 @@ class MatrixToDiscourseBot(Plugin):
         try:
             self.log.info(f"Received event body: {evt.content.body}")
 
-            num_messages = None
+            # Check if the user specified the `-n` flag
             if number and number.startswith("-n"):
                 try:
                     num_messages = int(number[2:].strip())
@@ -52,19 +52,13 @@ class MatrixToDiscourseBot(Plugin):
                     await evt.reply("Invalid number of messages specified. Please provide a valid number.")
                     return
 
-            if num_messages:
+                # Fetch the last `<number>` messages
                 room_id = evt.room_id
-                # Fetch messages based on reply or command execution point
-                if evt.content.get_reply_to():
-                    # Fetch the replied-to message and use it as the starting point
-                    replied_event = await evt.client.get_event(evt.room_id, evt.content.get_reply_to())
-                    messages = await self.get_last_n_messages(room_id, num_messages, event_id=replied_event.event_id)
-                else:
-                    # No reply, so fetch the last `n` messages from the time the command is posted
-                    messages = await self.get_last_n_messages(room_id, num_messages)
+                messages = await self.get_last_n_messages(room_id, num_messages)
 
                 # Summarize the messages
-                message_body = self.summarize_messages(messages)
+                message_body = await self.summarize_messages(messages)
+
             else:
                 # Check if the message is a reply to another message
                 if not evt.content.get_reply_to():
@@ -102,15 +96,80 @@ class MatrixToDiscourseBot(Plugin):
             self.log.error(f"Error processing !fpost command: {e}")
             await evt.reply(f"An error occurred: {e}")
 
-    async def get_last_n_messages(self, room_id: RoomID, n: int, event_id: str = None) -> List[str]:
+    async def get_last_n_messages(self, room_id: RoomID, n: int) -> List[str]:
         messages = []
-        async for event in self.client.paginate_room_events(room_id, from_event=event_id, limit=n, direction="b"):
-            if event.type == EventType.MESSAGE and hasattr(event.content, "body"):
+        async for event in self.client.paginate_room_events(room_id, limit=n, direction="b"):
+            if event.type == EventType.MESSAGE:
                 messages.append(event.content.body)
         return messages
+    
+    async def summarize_messages(self, messages: List[str]) -> str:
+        # Concatenate all messages into a single text block
+        combined_text = "\n".join(messages)
+        
+        # Estimate the token count (1 token ~= 4 characters of English text)
+        total_tokens = math.ceil(len(combined_text) / 4)
+        max_allowed_tokens = 30000  # Set the token limit for GPT
 
-    def summarize_messages(self, messages: List[str]) -> str:
-        return "\n".join(messages)
+        # If the total tokens exceed the allowed token limit, split the messages
+        if total_tokens > max_allowed_tokens:
+            chunks = self.split_into_chunks(messages, max_allowed_tokens)
+            summaries = [await self.summarize_chunk(chunk) for chunk in chunks]
+            combined_summary = " ".join(summaries)
+        else:
+            # Summarize the combined text directly
+            combined_summary = await self.summarize_chunk(combined_text)
+
+        return combined_summary
+
+    def split_into_chunks(self, messages: List[str], max_tokens: int) -> List[str]:
+        """Split messages into smaller chunks based on the token limit."""
+        current_chunk = []
+        current_length = 0
+        chunks = []
+
+        for message in messages:
+            message_length = math.ceil(len(message) / 4)
+            if current_length + message_length > max_tokens:
+                chunks.append("\n".join(current_chunk))
+                current_chunk = [message]
+                current_length = message_length
+            else:
+                current_chunk.append(message)
+                current_length += message_length
+
+        # Add the last chunk if there are remaining messages
+        if current_chunk:
+            chunks.append("\n".join(current_chunk))
+
+        return chunks
+
+    async def summarize_chunk(self, text: str) -> str:
+        """Send a request to GPT to summarize a chunk of text."""
+        prompt = f"Summarize the following text:\n{text}"
+        try:
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.config['gpt_api_key']}"
+            }
+            data = {
+                "model": self.config["model"],
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": self.config["max_tokens"],
+                "temperature": self.config["temperature"],
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(self.config["api_endpoint"], headers=headers, json=data) as response:
+                    response_json = await response.json()
+                    if response.status == 200:
+                        return response_json["choices"][0]["message"]["content"].strip()
+                    else:
+                        self.log.error(f"OpenAI API error: {response.status} {response_json}")
+                        return "Error: Failed to summarize"
+        except Exception as e:
+            self.log.error(f"Error summarizing chunk: {e}")
+            return "Error: Exception occurred"
 
     async def generate_title(self, message_body: str) -> str:
         prompt = f"Create a brief (3-10 word) attention grabbing title for the following post on the community forum: {message_body}"
