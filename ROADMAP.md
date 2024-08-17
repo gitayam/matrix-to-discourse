@@ -35,9 +35,9 @@ Thanks for checking out the roadmap for the Matrix to Discourse Bot! This docume
     - [ ] Fallback to a default title if GPT fails.
 - [ ] Direct message support
     - [ ] Direct message user with the post link as well
-- [ ] Allow More messages as context for post generation
+- [ ] Allow More messages as context for post generation (Working on)
     - [ ] Handle media messages from the bridge.
     Currently signal media is clumped together on signal so a user response is to the first media message not to the text body. 
-    - [ ] Handle multiple messages in a single reply.
+    - [ ] Handle multiple messages in a single reply. (pending) [multiple messages branch]
     - [ ] Post Generation Improvements, GPT for body of post as well using context.
 
