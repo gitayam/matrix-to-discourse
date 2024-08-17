@@ -36,21 +36,38 @@ class MatrixToDiscourseBot(Plugin):
 
     @command.new(name="fpost", require_subcommand=False)
     @command.argument("title", pass_raw=True, required=False)
-    async def post_to_discourse(self, evt: MessageEvent, title: str = None) -> None:
+    async def post_to_discourse(self, evt: MessageEvent, title: str = None, number: str = None) -> None:
         self.log.info("Command !fpost triggered.")
         await evt.reply("Creating a Forum post...")
 
         try:
             self.log.info(f"Received event body: {evt.content.body}")
 
-            # Check if the message is a reply to another message
-            if not evt.content.get_reply_to():
-                await evt.reply("You must reply to a message to use this command.")
-                return
+            # Check if the user specified the `-n` flag
+            if number and number.startswith("-n"):
+                try:
+                    num_messages = int(number[2:].strip())
+                except ValueError:
+                    await evt.reply("Invalid number of messages specified. Please provide a valid number.")
+                    return
 
-            # Extract the body of the replied-to message
-            replied_event = await evt.client.get_event(evt.room_id, evt.content.get_reply_to())
-            message_body = replied_event.content.body
+                # Fetch the last `<number>` messages
+                room_id = evt.room_id
+                messages = await self.get_last_n_messages(room_id, num_messages)
+
+                # Summarize the messages
+                message_body = self.summarize_messages(messages)
+
+            else:
+                # Check if the message is a reply to another message
+                if not evt.content.get_reply_to():
+                    await evt.reply("You must reply to a message to use this command.")
+                    return
+
+                # Extract the body of the replied-to message
+                replied_event = await evt.client.get_event(evt.room_id, evt.content.get_reply_to())
+                message_body = replied_event.content.body
+
             self.log.info(f"Message body: {message_body}")
 
             # Use provided title or generate one using OpenAI
@@ -78,6 +95,16 @@ class MatrixToDiscourseBot(Plugin):
             self.log.error(f"Error processing !fpost command: {e}")
             await evt.reply(f"An error occurred: {e}")
 
+    async def get_last_n_messages(self, room_id: RoomID, n: int) -> List[str]:
+        messages = []
+        async for event in self.client.paginate_room_events(room_id, limit=n, direction="b"):
+            if event.type == EventType.MESSAGE:
+                messages.append(event.content.body)
+        return messages
+    
+    def summarize_messages(self, messages: List[str]) -> str:
+        return "\n".join(messages)
+    
     async def generate_title(self, message_body: str) -> str:
         prompt = f"Create a brief (3-10 word) attention grabbing title for the following post on the community forum: {message_body}"
         try:
