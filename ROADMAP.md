@@ -40,7 +40,7 @@ Thanks for checking out the roadmap for the Matrix to Discourse Bot! This docume
         - Currently, Signal media is clumped together on Signal so a user response is to the first media message, not to the text body.
     - [ ] Handle multiple messages in a single reply.
     - [ ] Post Generation Improvements, GPT for body of the post as well using context.
-- [ ] Enhanced Post Summarization Functionality.
+- [ ] Enhanced Post Summarization Functionality.(working on) (Branch: Multiple Messages)
     - [ ] Implement `!fpost -n <number>` to summarize the last `<number>` messages into a post.
     - [ ] Implement `!fpost -h <hours>`, `-m <minutes>`, `-d <days>` to summarize messages from a specified timeframe.
     - [ ] Handle situations where the chat history does not go back as far as requested by defaulting to the available range.
