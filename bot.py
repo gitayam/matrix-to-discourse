@@ -2,9 +2,9 @@ import asyncio
 import json
 import re
 from datetime import datetime
-from typing import Type, Dict
+from typing import Type, Dict, List
 from mautrix.client import Client
-from mautrix.types import Format, TextMessageEventContent, EventType, RelationType
+from mautrix.types import Format, TextMessageEventContent, EventType, RelationType, RoomID
 from maubot import Plugin, MessageEvent
 from maubot.handlers import command, event
 import aiohttp
@@ -36,6 +36,7 @@ class MatrixToDiscourseBot(Plugin):
 
     @command.new(name="fpost", require_subcommand=False)
     @command.argument("title", pass_raw=True, required=False)
+    @command.argument("number", pass_raw=True, required=False)
     async def post_to_discourse(self, evt: MessageEvent, title: str = None, number: str = None) -> None:
         self.log.info("Command !fpost triggered.")
         await evt.reply("Creating a Forum post...")
@@ -43,7 +44,7 @@ class MatrixToDiscourseBot(Plugin):
         try:
             self.log.info(f"Received event body: {evt.content.body}")
 
-            # Check if the user specified the `-n` flag
+            num_messages = None
             if number and number.startswith("-n"):
                 try:
                     num_messages = int(number[2:].strip())
@@ -51,13 +52,19 @@ class MatrixToDiscourseBot(Plugin):
                     await evt.reply("Invalid number of messages specified. Please provide a valid number.")
                     return
 
-                # Fetch the last `<number>` messages
+            if num_messages:
                 room_id = evt.room_id
-                messages = await self.get_last_n_messages(room_id, num_messages)
+                # Fetch messages based on reply or command execution point
+                if evt.content.get_reply_to():
+                    # Fetch the replied-to message and use it as the starting point
+                    replied_event = await evt.client.get_event(evt.room_id, evt.content.get_reply_to())
+                    messages = await self.get_last_n_messages(room_id, num_messages, event_id=replied_event.event_id)
+                else:
+                    # No reply, so fetch the last `n` messages from the time the command is posted
+                    messages = await self.get_last_n_messages(room_id, num_messages)
 
                 # Summarize the messages
                 message_body = self.summarize_messages(messages)
-
             else:
                 # Check if the message is a reply to another message
                 if not evt.content.get_reply_to():
@@ -95,16 +102,16 @@ class MatrixToDiscourseBot(Plugin):
             self.log.error(f"Error processing !fpost command: {e}")
             await evt.reply(f"An error occurred: {e}")
 
-    async def get_last_n_messages(self, room_id: RoomID, n: int) -> List[str]:
+    async def get_last_n_messages(self, room_id: RoomID, n: int, event_id: str = None) -> List[str]:
         messages = []
-        async for event in self.client.paginate_room_events(room_id, limit=n, direction="b"):
-            if event.type == EventType.MESSAGE:
+        async for event in self.client.paginate_room_events(room_id, from_event=event_id, limit=n, direction="b"):
+            if event.type == EventType.MESSAGE and hasattr(event.content, "body"):
                 messages.append(event.content.body)
         return messages
-    
+
     def summarize_messages(self, messages: List[str]) -> str:
         return "\n".join(messages)
-    
+
     async def generate_title(self, message_body: str) -> str:
         prompt = f"Create a brief (3-10 word) attention grabbing title for the following post on the community forum: {message_body}"
         try:
