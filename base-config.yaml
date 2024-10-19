@@ -16,8 +16,8 @@ unsorted_category_id: topic_id_9 # The category ID for the unsorted category
 ###### AI Model Configuration ######
 # Choose the AI model type: "openai", "google", "local", or "none"
 # If ai_model_type is set to "none", no AI model will be used
-ai_model_type: "openai"
-
+ai_model_type: "none"
+# default to none to give user a chance to set it to openai, google, or local in the config file.
 ###### OpenAI API Configuration ######
 # Use these settings if ai_model_type is set to "openai"
 # To get your API key, sign up at https://platform.openai.com/signup or log in at https://platform.openai.com/login
