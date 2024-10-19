@@ -1,9 +1,6 @@
 #requirements.txt
 aiohttp
-asyncio
-logging
 pyyaml
 openai
-maubot
-mautrix
-mautrix-client
+maubot==0.5.0
+mautrix==0.20.6
