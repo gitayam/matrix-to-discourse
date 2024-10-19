@@ -20,6 +20,11 @@ Thanks for checking out the roadmap for the Matrix to Discourse Bot! This docume
 - [x] Generate a title based on the body of the message using GPT-4o-mini.
     - [x] Configuration of GPT API Key and Model.
     - [x] Configuration of GPT Max Tokens and Temperature.
+- [x] Configuration of Post Title Generation.
+    - [x] Allow users to configure the title generation GPT Prompt.
+    - [x] Allow users to disable GPT title generation.
+    - [x] Fallback to a default title if GPT fails.
+
 
 ## Roadmap
 - [ ] White-listed users can create posts in a specific category.
@@ -29,10 +34,6 @@ Thanks for checking out the roadmap for the Matrix to Discourse Bot! This docume
 - [ ] Configuration of Trigger Words.
     - [ ] Allow users to configure trigger words that will trigger the bot to create a post.
     - [ ] Allow users to configure trigger words that will trigger the bot to search for a post.
-- [ ] Configuration of Post Title Generation.
-    - [ ] Allow users to configure the title generation GPT Prompt.
-    - [ ] Allow users to disable GPT title generation.
-    - [ ] Fallback to a default title if GPT fails.
 - [ ] Direct message support
     - [ ] Direct message user with the post link as well
 - [ ] Allow More messages as context for post generation (Working on)
