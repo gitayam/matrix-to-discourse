@@ -27,6 +27,16 @@ Thanks for checking out the roadmap for the Matrix to Discourse Bot! This docume
 
 
 ## Roadmap
+- [ ] Create a post based on links posted in the chat.
+    - [ ] List of URLs to trigger REGEX conversion and posting.
+    - [ ] Option to reply to any message containing a link and go through this process even if the link isn't in the list.
+    - [ ] REGEX to convert links to 12ft.io and archive.org links to bypass paywalls.
+    - [ ] Tag post with "posted-link" tag.
+    - [ ] Search for duplicate posts with the same URL, don't create a new post if it exists.
+    - [ ] Scrape the post and summarize it using GPT-4o-mini.
+    - [ ] Add the summary as a post body.
+    - [ ] Add the 12ft.io and archive.org links to the post body.
+    - [ ] Return the post link to the chat.
 - [ ] White-listed users can create posts in a specific category.
     - [ ] Based on the user's role in the Matrix room.
     - [ ] Based on User ID.
