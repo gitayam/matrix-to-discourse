@@ -57,7 +57,7 @@ class MatrixToDiscourseBot(Plugin):
     @command.argument("title", pass_raw=True, required=False)  # Title is optional and taken from AI if not provided
     async def post_to_discourse(self, evt: MessageEvent, title: str = None) -> None:
         self.log.info("Command !fpost triggered.")
-        await evt.reply("Creating a Forum post...")
+        await evt.reply("Creating a Forum post, log in to the community discourse to view all posts and to engage on the forum...")
 
         try:
             self.log.info(f"Received event body: {evt.content.body}")
@@ -100,7 +100,7 @@ class MatrixToDiscourseBot(Plugin):
                 message_body
             )
             if post_url:
-                await evt.reply(f"Post created successfully! URL: {post_url}")
+                await evt.reply(f"Post created successfully! URL: {post_url} \n\n Log in to the community discourse to engage on the forum.")
             else:
                 await evt.reply(f"Failed to create post: {error}")
 
