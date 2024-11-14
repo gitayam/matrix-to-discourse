@@ -45,7 +45,7 @@ class Config(BaseProxyConfig):
         # search and post trigger taken from the config.yaml file
         helper.copy("search_trigger")
         helper.copy("post_trigger")
-
+        helper.copy("help_trigger")
 # Main plugin class
 class MatrixToDiscourseBot(Plugin):
     async def start(self) -> None:
@@ -56,6 +56,17 @@ class MatrixToDiscourseBot(Plugin):
     @classmethod
     def get_config_class(cls) -> Type[BaseProxyConfig]:
         return Config
+    # Function to handle the help event
+    @command.new(name=help_trigger, require_subcommand=False)
+    async def help(self, evt: MessageEvent) -> None:
+        self.log.info("Command !fhelp triggered.")
+        help_msg = (
+            "Welcome to the Community Forum Bot!\n\n"
+            "To create a post on the forum, reply to a message with `!fpost`.\n"
+            "To search the forum, use `!fsearch <query>`.\n"
+            "For help, use `!fhelp`."
+        )
+        await evt.reply(help_msg)
     # Function to handle the message event
     @command.new(name=post_trigger, require_subcommand=False)
     @command.argument("title", pass_raw=True, required=False)  # Title is optional and taken from AI if not provided
