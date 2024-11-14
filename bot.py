@@ -10,8 +10,6 @@ from maubot.handlers import command, event
 import aiohttp
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 
-search_trigger="fsearch"
-post_trigger="post"
 # Config class to manage configuration
 class Config(BaseProxyConfig):
     def do_update(self, helper: ConfigUpdateHelper) -> None:
@@ -43,6 +41,10 @@ class Config(BaseProxyConfig):
         helper.copy("discourse_base_url")
         helper.copy("unsorted_category_id")
         helper.copy("matrix_to_discourse_topic")
+
+        # search and post trigger taken from the config.yaml file
+        helper.copy("search_trigger")
+        helper.copy("post_trigger")
 
 # Main plugin class
 class MatrixToDiscourseBot(Plugin):

@@ -1,3 +1,8 @@
+###### BOT Configuration ######
+# The bot will only respond to messages that start with this prefix along with "!" such as !command
+search_trigger="fsearch"
+post_trigger="fpost"
+help_trigger="fhelp"
 ###### Discourse Configuration ######
 # To get your API key, go to https://discourse.example.com/admin/api/keys
 # replace "discourse.example.com" with your Discourse URL
