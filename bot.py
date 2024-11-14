@@ -10,6 +10,8 @@ from maubot.handlers import command, event
 import aiohttp
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 
+search_trigger="fsearch"
+post_trigger="post"
 # Config class to manage configuration
 class Config(BaseProxyConfig):
     def do_update(self, helper: ConfigUpdateHelper) -> None:
@@ -42,22 +44,24 @@ class Config(BaseProxyConfig):
         helper.copy("unsorted_category_id")
         helper.copy("matrix_to_discourse_topic")
 
-
+# Main plugin class
 class MatrixToDiscourseBot(Plugin):
     async def start(self) -> None:
         await super().start()
         self.config.load_and_update()
         self.log.info("MatrixToDiscourseBot started")
-
+    # Function to get the configuration class
     @classmethod
     def get_config_class(cls) -> Type[BaseProxyConfig]:
         return Config
-
-    @command.new(name="fpost", require_subcommand=False)
+    # Function to handle the message event
+    @command.new(name=post_trigger, require_subcommand=False)
     @command.argument("title", pass_raw=True, required=False)  # Title is optional and taken from AI if not provided
+    # Function to post the message to the discourse
     async def post_to_discourse(self, evt: MessageEvent, title: str = None) -> None:
+        # information for user to trigger by using the post_trigger command, use the variable
         self.log.info("Command !fpost triggered.")
-        await evt.reply("Creating a Forum post, log in to the community discourse to view all posts and to engage on the forum...")
+        await evt.reply("Creating a Forum post, log in to the community forum to view all posts and to engage on the forum...")
 
         try:
             self.log.info(f"Received event body: {evt.content.body}")
@@ -100,14 +104,14 @@ class MatrixToDiscourseBot(Plugin):
                 message_body
             )
             if post_url:
-                await evt.reply(f"Post created successfully! URL: {post_url} \n\n Log in to the community discourse to engage on the forum.")
+                await evt.reply(f"Post created successfully! URL: {post_url} \n\n Log in to the community to engage with this post.")
             else:
                 await evt.reply(f"Failed to create post: {error}")
 
         except Exception as e:
             self.log.error(f"Error processing !fpost command: {e}")
             await evt.reply(f"An error occurred: {e}")
-
+    # Function to generate title
     async def generate_title(self, message_body: str) -> str:
         ai_model_type = self.config["ai_model_type"]
         
@@ -118,7 +122,7 @@ class MatrixToDiscourseBot(Plugin):
         elif ai_model_type == "google":
             return await self.generate_google_title(message_body)
         return None  # If none is selected, this should never be called
-
+    # Function to generate title using OpenAI
     async def generate_openai_title(self, message_body: str) -> str:
         prompt = f"Create a brief (3-10 word) attention grabbing title for the following post on the community forum: {message_body}"
         try:
@@ -219,8 +223,8 @@ class MatrixToDiscourseBot(Plugin):
                     return post_url, None
                 else:
                     return None, f"Failed to create post: {response.status}\nResponse: {response_text}"
-
-    @command.new(name="fsearch", require_subcommand=False)
+    # Function to search the discourse
+    @command.new(name=search_trigger, require_subcommand=False)
     @command.argument("query", pass_raw=True, required=True)
     async def search_discourse(self, evt: MessageEvent, query: str) -> None:
         self.log.info("Command !fsearch triggered.")
