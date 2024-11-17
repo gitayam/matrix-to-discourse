@@ -49,7 +49,9 @@ class Config(BaseProxyConfig):
         helper.copy("help_trigger")
 
         # URL patterns to check for in the message body
-        helper.copy("url_patterns")
+        helper.copy("url_patterns", is_list=True)
+        helper.copy("url_post_trigger") # url_post_trigger from config 
+
 # Main plugin class
 class MatrixToDiscourseBot(Plugin):
     async def start(self) -> None:
