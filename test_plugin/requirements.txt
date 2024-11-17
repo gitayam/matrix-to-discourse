@@ -1,6 +1,0 @@
-#requirements.txt
-aiohttp
-pyyaml
-openai
-maubot==0.5.0
-mautrix==0.20.6

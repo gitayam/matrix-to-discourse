@@ -2,14 +2,9 @@
 
 import unittest
 from unittest.mock import MagicMock, AsyncMock, patch
-from bot import MatrixToDiscourseBot
+from bot import MatrixToDiscourseBot, extract_urls, generate_bypass_links, DiscourseAPI
 from maubot import MessageEvent
 import asyncio
-
-# Import missing modules
-from url_handler import extract_urls, generate_bypass_links
-from discourse_api import DiscourseAPI
-
 
 class TestMatrixToDiscourseBot(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

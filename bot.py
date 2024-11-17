@@ -20,7 +20,19 @@ from mautrix.types import (
 from maubot import Plugin, MessageEvent
 from maubot.handlers import command, event
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
-from bs4 import BeautifulSoup
+
+from html.parser import HTMLParser
+
+class HTMLCleaner(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.text = []
+
+    def handle_data(self, data):
+        self.text.append(data)
+
+    def get_cleaned_text(self):
+        return ''.join(self.text).strip()
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -364,7 +376,7 @@ def generate_bypass_links(url: str) -> Dict[str, str]:
     }
     return links
 
-async def scrape_content(url: str) -> Optional[str]:
+async def scrape_content(url: str) -> str:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
@@ -372,16 +384,12 @@ async def scrape_content(url: str) -> Optional[str]:
                     logger.error(f"Failed to retrieve content from {url}: HTTP {response.status}")
                     return None
                 html = await response.text()
-                soup = BeautifulSoup(html, 'html.parser')
-                # Remove scripts and styles
-                for script_or_style in soup(['script', 'style']):
-                    script_or_style.decompose()
-                text = soup.get_text(separator='\n')
-                return text.strip()
+                cleaner = HTMLCleaner()
+                cleaner.feed(html)
+                return cleaner.get_cleaned_text()
     except Exception as e:
         logger.error(f"Error scraping content from {url}: {e}")
         return None
-
 # Main plugin class
 class MatrixToDiscourseBot(Plugin):
     async def start(self) -> None:
