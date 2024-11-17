@@ -567,7 +567,8 @@ class MatrixToDiscourseBot(Plugin):
                 title = await self.generate_title(f"URL: {url}, Domain: {url.split('/')[2]}")
 
             if not title:
-                title = "Untitled Post"
+                #include the displayname in the title
+                title = "Untitled Post by " + displayname
 
             # Generate bypass links
             bypass_links = generate_bypass_links(url)
