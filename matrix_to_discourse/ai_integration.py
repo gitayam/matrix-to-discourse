@@ -1,6 +1,7 @@
 # ai_integration.py
 
 import aiohttp
+import traceback
 
 
 class AIIntegration:
@@ -53,7 +54,8 @@ class AIIntegration:
                         self.log.error(f"OpenAI API error: {response.status} {response_json}")
                         return None
         except Exception as e:
-            self.log.error(f"Error generating title with OpenAI: {e}")
+            tb = traceback.format_exc()
+            self.log.error(f"Error generating title with OpenAI: {e}\n{tb}")
             return None
 
     async def summarize_with_openai(self, content: str) -> str:
@@ -79,12 +81,14 @@ class AIIntegration:
                         self.log.error(f"OpenAI API error: {response.status} {response_json}")
                         return None
         except Exception as e:
-            self.log.error(f"Error summarizing with OpenAI: {e}")
+            tb = traceback.format_exc()
+            self.log.error(f"Error summarizing with OpenAI: {e}\n{tb}")
             return None
 
     async def generate_local_title(self, message_body: str) -> str:
-        # Implement according to local LLM API
+        # Implement according to local LLM API using openai url but hosted locally or in private ip
         # This is a placeholder
+
         return None
 
     async def summarize_with_local_llm(self, content: str) -> str:
@@ -115,7 +119,8 @@ class AIIntegration:
                         self.log.error(f"Google API error: {response.status} {response_json}")
                         return None
         except Exception as e:
-            self.log.error(f"Error generating title with Google: {e}")
+            tb = traceback.format_exc()
+            self.log.error(f"Error generating title with Google: {e}\n{tb}")
             return None
 
     async def summarize_with_google(self, content: str) -> str:
@@ -141,5 +146,6 @@ class AIIntegration:
                         self.log.error(f"Google API error: {response.status} {response_json}")
                         return None
         except Exception as e:
-            self.log.error(f"Error summarizing with Google: {e}")
+            tb = traceback.format_exc()
+            self.log.error(f"Error summarizing with Google: {e}\n{tb}")
             return None

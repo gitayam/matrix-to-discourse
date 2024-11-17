@@ -17,10 +17,9 @@ from maubot import Plugin, MessageEvent
 from maubot.handlers import command, event
 import aiohttp
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
-from url_handler import extract_urls, generate_bypass_links, scrape_content
-from ai_integration import AIIntegration
-from discourse_api import DiscourseAPI
-
+from .url_handler import extract_urls, generate_bypass_links, scrape_content
+from .ai_integration import AIIntegration
+from .discourse_api import DiscourseAPI
 
 # Config class to manage configuration
 class Config(BaseProxyConfig):
@@ -77,9 +76,12 @@ class MatrixToDiscourseBot(Plugin):
     def get_config_class(cls) -> Type[BaseProxyConfig]:
         return Config
 
-    # Function to handle the help event
+    # Command to handle the help event
     @command.new(name=lambda self: self.config["help_trigger"], require_subcommand=False)
-    async def help(self, evt: MessageEvent) -> None:
+    async def help_command(self, evt: MessageEvent) -> None:
+        await self.handle_help(evt)
+
+    async def handle_help(self, evt: MessageEvent) -> None:
         self.log.info(f"Command !{self.config['help_trigger']} triggered.")
         help_msg = (
             "Welcome to the Community Forum Bot!\n\n"
@@ -90,10 +92,13 @@ class MatrixToDiscourseBot(Plugin):
         )
         await evt.reply(help_msg)
 
-    # Function to handle the post command
+    # Command to handle the post command
     @command.new(name=lambda self: self.config["post_trigger"], require_subcommand=False)
     @command.argument("title", pass_raw=True, required=False)
-    async def post_to_discourse(self, evt: MessageEvent, title: str = None) -> None:
+    async def post_to_discourse_command(self, evt: MessageEvent, title: str = None) -> None:
+        await self.handle_post_to_discourse(evt, title)
+
+    async def handle_post_to_discourse(self, evt: MessageEvent, title: str = None) -> None:
         self.log.info(f"Command !{self.config['post_trigger']} triggered.")
         await evt.reply(
             "Creating a Forum post, log in to the community forum to view all posts and to engage on the forum..."
@@ -161,10 +166,13 @@ class MatrixToDiscourseBot(Plugin):
     async def generate_title(self, message_body: str) -> str:
         return await self.ai_integration.generate_title(message_body)
 
-    # Function to search the discourse
+    # Command to search the discourse
     @command.new(name=lambda self: self.config["search_trigger"], require_subcommand=False)
     @command.argument("query", pass_raw=True, required=True)
-    async def search_discourse(self, evt: MessageEvent, query: str) -> None:
+    async def search_discourse_command(self, evt: MessageEvent, query: str) -> None:
+        await self.handle_search_discourse(evt, query)
+
+    async def handle_search_discourse(self, evt: MessageEvent, query: str) -> None:
         self.log.info(f"Command !{self.config['search_trigger']} triggered.")
         await evt.reply("Searching the forum...")
 
@@ -219,7 +227,7 @@ class MatrixToDiscourseBot(Plugin):
             return
 
         message_body = evt.content.body
-        url_patterns = self.config["url_patterns"]
+        url_patterns = self.config.get("url_patterns", [])
         for pattern in url_patterns:
             if re.search(pattern, message_body):
                 await self.process_link(evt, message_body)
@@ -227,7 +235,10 @@ class MatrixToDiscourseBot(Plugin):
 
     # Command to process URLs in replies
     @command.new(name=lambda self: self.config["url_post_trigger"], require_subcommand=False)
-    async def post_url_to_discourse(self, evt: MessageEvent) -> None:
+    async def post_url_to_discourse_command(self, evt: MessageEvent) -> None:
+        await self.handle_post_url_to_discourse(evt)
+
+    async def handle_post_url_to_discourse(self, evt: MessageEvent) -> None:
         self.log.info(f"Command !{self.config['url_post_trigger']} triggered.")
 
         if not evt.content.get_reply_to():
