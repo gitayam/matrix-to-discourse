@@ -1,3 +1,4 @@
+#bot.py is the main file that contains the main plugin class and the configuration class. The plugin class contains the main functions to handle the help, post, and search commands. The configuration class contains the configuration for the bot, including the AI model type, OpenAI configuration, Local LLM configuration, Google Gemini configuration, Discourse configuration, and the search and post triggers.
 import asyncio
 import json
 import re

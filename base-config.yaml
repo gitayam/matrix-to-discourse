@@ -1,3 +1,4 @@
+#base-config.yaml is the main configuration file for the bot. It contains the settings for the bot, including the bot's username, password, and the server to connect to. It also contains the settings for the Discourse integration, the AI model, and the triggers for the bot's commands.
 ###### BOT Configuration ######
 # The bot will only respond to messages that start with this prefix along with "!" such as !command
 search_trigger="fsearch"
