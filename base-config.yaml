@@ -58,4 +58,9 @@ google:
   max_tokens: 3000
   temperature: 1
 
+###### URL Pattern Configuration ######
+# The bot will only respond to URLs that match these patterns
+url_patterns:
+  - 'https?://example\.com/.*'
+  - 'https?://anotherdomain\.org/articles/.*'
 

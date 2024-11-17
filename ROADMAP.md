@@ -30,7 +30,7 @@ Thanks for checking out the roadmap for the Matrix to Discourse Bot! This docume
 ## Roadmap
 - [ ] Create a post based on links posted in the chat.
     - [ ] List of URLs to trigger REGEX conversion and posting.
-    - [ ] Option to reply to any message containing a link and go through this process even if the link isn't in the list.
+    - [ ] Option to reply to any message containing a link with a trigger like !furl and go through this process even if the link isn't in the list.
     - [ ] REGEX to convert links to 12ft.io and archive.org links to bypass paywalls.
     - [ ] Tag post with "posted-link" tag.
     - [ ] Search for duplicate posts with the same URL, don't create a new post if it exists.
