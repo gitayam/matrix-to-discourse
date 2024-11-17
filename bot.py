@@ -57,9 +57,9 @@ class MatrixToDiscourseBot(Plugin):
     def get_config_class(cls) -> Type[BaseProxyConfig]:
         return Config
     # Function to handle the help event
-    @command.new(name=help_trigger, require_subcommand=False)
+    @command.new(name=self.config["help_trigger"], require_subcommand=False)
     async def help(self, evt: MessageEvent) -> None:
-        self.log.info("Command !fhelp triggered.")
+        self.log.info("Command !{self.config['help_trigger']} triggered.")
         help_msg = (
             "Welcome to the Community Forum Bot!\n\n"
             "To create a post on the forum, reply to a message with `!fpost`.\n"
@@ -68,12 +68,12 @@ class MatrixToDiscourseBot(Plugin):
         )
         await evt.reply(help_msg)
     # Function to handle the message event
-    @command.new(name=post_trigger, require_subcommand=False)
+    @command.new(name=self.config["post_trigger"], require_subcommand=False)
     @command.argument("title", pass_raw=True, required=False)  # Title is optional and taken from AI if not provided
     # Function to post the message to the discourse
     async def post_to_discourse(self, evt: MessageEvent, title: str = None) -> None:
         # information for user to trigger by using the post_trigger command, use the variable
-        self.log.info("Command !fpost triggered.")
+        self.log.info("Command !{self.config['post_trigger']} triggered.")
         await evt.reply("Creating a Forum post, log in to the community forum to view all posts and to engage on the forum...")
 
         try:
@@ -237,10 +237,10 @@ class MatrixToDiscourseBot(Plugin):
                 else:
                     return None, f"Failed to create post: {response.status}\nResponse: {response_text}"
     # Function to search the discourse
-    @command.new(name=search_trigger, require_subcommand=False)
+    @command.new(name=self.config["search_trigger"], require_subcommand=False)
     @command.argument("query", pass_raw=True, required=True)
     async def search_discourse(self, evt: MessageEvent, query: str) -> None:
-        self.log.info("Command !fsearch triggered.")
+        self.log.info("Command !{self.config['search_trigger']} triggered.")
         await evt.reply("Searching the forum...")
 
         try:
