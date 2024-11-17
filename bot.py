@@ -74,9 +74,11 @@ class Config(BaseProxyConfig):
         helper.copy("help_trigger")
         helper.copy("url_post_trigger")
 
-        # URL patterns to check for in the message body
-        helper.copy("url_patterns", is_list=True)
-
+        # Handle URL patterns explicitly as a list
+        if "url_patterns" in helper.base:
+            self["url_patterns"] = list(helper.base["url_patterns"])
+        else:
+            self["url_patterns"] = []
 # AIIntegration class (from ai_integration.py)
 class AIIntegration:
     def __init__(self, config, log):
@@ -112,7 +114,7 @@ class AIIntegration:
     async def generate_openai_title(self, message_body: str) -> Optional[str]:
         prompt = f"Create a brief (3-10 word) attention-grabbing title for the following post on the community forum: {message_body}"
         try:
-            api_key = self.config.get('openai.api_key')
+            api_key = self.config.get('openai.api_key', None)
             if not api_key:
                 self.log.error("OpenAI API key is not configured.")
                 return None
@@ -150,7 +152,7 @@ class AIIntegration:
     async def summarize_with_openai(self, content: str) -> Optional[str]:
         prompt = f"Please provide a concise summary of the following content:\n\n{content}"
         try:
-            api_key = self.config.get('openai.api_key')
+            api_key = self.config.get('openai.api_key', None)
             if not api_key:
                 self.log.error("OpenAI API key is not configured.")
                 return None
@@ -198,7 +200,7 @@ class AIIntegration:
     async def generate_google_title(self, message_body: str) -> Optional[str]:
         prompt = f"Create a brief (3-10 word) attention-grabbing title for the following post on the community forum: {message_body}"
         try:
-            api_key = self.config.get('google.api_key')
+            api_key = self.config.get('google.api_key', None)
             if not api_key:
                 self.log.error("Google API key is not configured.")
                 return None
@@ -237,7 +239,7 @@ class AIIntegration:
     async def summarize_with_google(self, content: str) -> Optional[str]:
         prompt = f"Please provide a concise summary of the following content:\n\n{content}"
         try:
-            api_key = self.config.get('google.api_key')
+            api_key = self.config.get('google.api_key', None)
             if not api_key:
                 self.log.error("Google API key is not configured.")
                 return None
@@ -390,6 +392,7 @@ async def scrape_content(url: str) -> str:
     except Exception as e:
         logger.error(f"Error scraping content from {url}: {e}")
         return None
+
 # Main plugin class
 class MatrixToDiscourseBot(Plugin):
     async def start(self) -> None:
@@ -555,15 +558,19 @@ class MatrixToDiscourseBot(Plugin):
     # Handle messages with URLs
     @event.on(EventType.ROOM_MESSAGE)
     async def handle_message(self, evt: MessageEvent) -> None:
+        if evt.sender == self.client.mxid:
+            return
+
         if evt.content.msgtype != MessageType.TEXT:
             return
 
-        message_body = evt.content.body
-        url_patterns = self.config.get("url_patterns", [])
-        for pattern in url_patterns:
-            if re.search(pattern, message_body):
-                await self.process_link(evt, message_body)
-                break
+        # Disable automatic URL processing
+        # message_body = evt.content.body
+        # url_patterns = self.config.get("url_patterns", [])
+        # for pattern in url_patterns:
+        #     if re.search(pattern, message_body):
+        #         await self.process_link(evt, message_body)
+        #         break
 
     # Command to process URLs in replies
     @command.new(name=lambda self: self.config["url_post_trigger"], require_subcommand=False)
@@ -596,6 +603,7 @@ class MatrixToDiscourseBot(Plugin):
     # Process links in messages
     async def process_link(self, evt: MessageEvent, message_body: str) -> None:
         urls = extract_urls(message_body)
+        username = evt.sender.split(":")[0]  # Extract the username from the sender
         for url in urls:
             # Check for duplicates
             duplicate_exists = await self.discourse_api.check_for_duplicate(url)
@@ -605,31 +613,37 @@ class MatrixToDiscourseBot(Plugin):
 
             # Scrape content
             content = await scrape_content(url)
-            if not content:
-                await evt.reply(f"Failed to scrape content from {url}")
-                continue
+            summary = None
+            if content:
+                # Summarize content if scraping was successful
+                summary = await self.ai_integration.summarize_content(content)
+                if not summary:
+                    self.log.warning(f"Summarization failed for URL: {url}")
+            else:
+                self.log.warning(f"Scraping content failed for URL: {url}")
 
-            # Summarize content
-            summary = await self.ai_integration.summarize_content(content)
-            if not summary:
-                await evt.reply("Failed to summarize the content.")
-                continue
+            # Generate title
+            title = None
+            if summary:
+                title = await self.generate_title(summary)
+            else:
+                self.log.info(f"Generating title using URL and domain for: {url}")
+                title = await self.generate_title(f"URL: {url}, Domain: {url.split('/')[2]}")
+
+            if not title:
+                title = "Untitled Post"
 
             # Generate bypass links
             bypass_links = generate_bypass_links(url)
 
             # Prepare message body
             post_body = (
-                f"{summary}\n\n"
-                f"Original Link: {bypass_links['original']}\n"
-                f"12ft.io Link: {bypass_links['12ft']}\n"
-                f"Archive.org Link: {bypass_links['archive']}"
+                f"**Posted by:** @{username}\n\n"
+                f"{summary or 'Content could not be scraped or summarized.'}\n\n"
+                f"**Original Link:** {bypass_links['original']}\n"
+                f"**12ft.io Link:** {bypass_links['12ft']}\n"
+                f"**Archive.org Link:** {bypass_links['archive']}"
             )
-
-            # Generate title
-            title = await self.generate_title(summary)
-            if not title:
-                title = "Default Title"
 
             # Create the post on Discourse
             tags = ["posted-link"]
@@ -642,6 +656,57 @@ class MatrixToDiscourseBot(Plugin):
             )
 
             if post_url:
-                await evt.reply(f"Post created successfully! URL: {post_url}")
+                # include title in the reply
+                await evt.reply(f"Post created successfully! Title: {title}, URL: {post_url}")
             else:
-                await evt.reply(f"Failed to create post: {error}")
+                await evt.reply(f"Failed to create post: {error}")        
+                urls = extract_urls(message_body)
+            for url in urls:
+                # Check for duplicates
+                duplicate_exists = await self.discourse_api.check_for_duplicate(url)
+                if duplicate_exists:
+                    await evt.reply(f"A post with this URL already exists: {url}")
+                    continue
+
+                # Scrape content
+                content = await scrape_content(url)
+                if not content:
+                    await evt.reply(f"Failed to scrape content from {url}")
+                    continue
+
+                # Summarize content
+                summary = await self.ai_integration.summarize_content(content)
+                if not summary:
+                    await evt.reply("Failed to summarize the content.")
+                    continue
+
+                # Generate bypass links
+                bypass_links = generate_bypass_links(url)
+
+                # Prepare message body
+                post_body = (
+                    f"{summary}\n\n"
+                    f"Original Link: {bypass_links['original']}\n"
+                    f"12ft.io Link: {bypass_links['12ft']}\n"
+                    f"Archive.org Link: {bypass_links['archive']}"
+                )
+
+                # Generate title
+                title = await self.generate_title(summary)
+                if not title:
+                    title = "Default Title"
+
+                # Create the post on Discourse
+                tags = ["posted-link"]
+                topic_id = self.config["unsorted_category_id"]
+                post_url, error = await self.discourse_api.create_post(
+                    title=title,
+                    raw=post_body,
+                    category_id=topic_id,
+                    tags=tags,
+                )
+
+                if post_url:
+                    await evt.reply(f"Post created successfully! URL: {post_url}")
+                else:
+                    await evt.reply(f"Failed to create post: {error}")
