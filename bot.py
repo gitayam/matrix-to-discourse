@@ -1,5 +1,3 @@
-# bot.py
-
 import asyncio
 import json
 import re
@@ -23,6 +21,7 @@ from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 
 from html.parser import HTMLParser
 
+# Define HTMLCleaner to extract text from HTML
 class HTMLCleaner(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -79,7 +78,8 @@ class Config(BaseProxyConfig):
             self["url_patterns"] = list(helper.base["url_patterns"])
         else:
             self["url_patterns"] = []
-# AIIntegration class (from ai_integration.py)
+
+# AIIntegration class
 class AIIntegration:
     def __init__(self, config, log):
         self.config = config
@@ -198,84 +198,16 @@ class AIIntegration:
         return None
 
     async def generate_google_title(self, message_body: str) -> Optional[str]:
-        prompt = f"Create a brief (3-10 word) attention-grabbing title for the following post on the community forum: {message_body}"
-        try:
-            api_key = self.config.get('google.api_key', None)
-            if not api_key:
-                self.log.error("Google API key is not configured.")
-                return None
-
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}"
-            }
-            data = {
-                "model": self.config["google.model"],
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": self.config["google.max_tokens"],
-                "temperature": self.config["google.temperature"],
-            }
-
-            async with aiohttp.ClientSession() as session:
-                async with session.post(self.config["google.api_endpoint"], headers=headers, json=data) as response:
-                    response_text = await response.text()
-                    try:
-                        response_json = json.loads(response_text)
-                    except json.JSONDecodeError as e:
-                        self.log.error(f"Error decoding Google API response: {e}\nResponse text: {response_text}")
-                        return None
-
-                    if response.status == 200:
-                        # Adjust according to actual response format
-                        return response_json["candidates"][0]["output"].strip()
-                    else:
-                        self.log.error(f"Google API error: {response.status} {response_json}")
-                        return None
-        except Exception as e:
-            tb = traceback.format_exc()
-            self.log.error(f"Error generating title with Google: {e}\n{tb}")
-            return None
+        # Implement according to Google API
+        self.log.error("Google AI integration is not implemented yet.")
+        return None
 
     async def summarize_with_google(self, content: str) -> Optional[str]:
-        prompt = f"Please provide a concise summary of the following content:\n\n{content}"
-        try:
-            api_key = self.config.get('google.api_key', None)
-            if not api_key:
-                self.log.error("Google API key is not configured.")
-                return None
+        # Implement according to Google API
+        self.log.error("Google AI integration is not implemented yet.")
+        return None
 
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}"
-            }
-            data = {
-                "model": self.config["google.model"],
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": self.config["google.max_tokens"],
-                "temperature": self.config["google.temperature"],
-            }
-
-            async with aiohttp.ClientSession() as session:
-                async with session.post(self.config["google.api_endpoint"], headers=headers, json=data) as response:
-                    response_text = await response.text()
-                    try:
-                        response_json = json.loads(response_text)
-                    except json.JSONDecodeError as e:
-                        self.log.error(f"Error decoding Google API response: {e}\nResponse text: {response_text}")
-                        return None
-
-                    if response.status == 200:
-                        # Adjust according to actual response format
-                        return response_json["candidates"][0]["output"].strip()
-                    else:
-                        self.log.error(f"Google API error: {response.status} {response_json}")
-                        return None
-        except Exception as e:
-            tb = traceback.format_exc()
-            self.log.error(f"Error summarizing with Google: {e}\n{tb}")
-            return None
-
-# DiscourseAPI class (from discourse_api.py)
+# DiscourseAPI class
 class DiscourseAPI:
     def __init__(self, config, log):
         self.config = config
@@ -365,7 +297,7 @@ class DiscourseAPI:
                     self.log.error(f"Discourse API error: {response.status} {response_json}")
                     return None
 
-# URL handling functions (from url_handler.py)
+# URL handling functions
 def extract_urls(text: str) -> List[str]:
     url_regex = r'(https?://\S+)'
     return re.findall(url_regex, text)
@@ -378,19 +310,21 @@ def generate_bypass_links(url: str) -> Dict[str, str]:
     }
     return links
 
-async def scrape_content(url: str) -> str:
+# Function to scrape content from URLs
+async def scrape_content(url: str) -> Optional[str]:
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
+            async with session.get(url, timeout=10) as response:
                 if response.status != 200:
                     logger.error(f"Failed to retrieve content from {url}: HTTP {response.status}")
                     return None
                 html = await response.text()
                 cleaner = HTMLCleaner()
                 cleaner.feed(html)
-                return cleaner.get_cleaned_text()
+                content = cleaner.get_cleaned_text()
+                return content if content else None
     except Exception as e:
-        logger.error(f"Error scraping content from {url}: {e}")
+        logger.error(f"Error scraping content from {url}: {e}", exc_info=True)
         return None
 
 # Main plugin class
@@ -558,6 +492,7 @@ class MatrixToDiscourseBot(Plugin):
     # Handle messages with URLs
     @event.on(EventType.ROOM_MESSAGE)
     async def handle_message(self, evt: MessageEvent) -> None:
+        # Ignore messages sent by the bot itself
         if evt.sender == self.client.mxid:
             return
 
@@ -565,6 +500,7 @@ class MatrixToDiscourseBot(Plugin):
             return
 
         # Disable automatic URL processing
+        # Uncomment the code below if you wish to enable automatic URL processing
         # message_body = evt.content.body
         # url_patterns = self.config.get("url_patterns", [])
         # for pattern in url_patterns:
@@ -656,57 +592,7 @@ class MatrixToDiscourseBot(Plugin):
             )
 
             if post_url:
-                # include title in the reply
+                # Include title in the reply
                 await evt.reply(f"Post created successfully! Title: {title}, URL: {post_url}")
             else:
-                await evt.reply(f"Failed to create post: {error}")        
-                urls = extract_urls(message_body)
-            for url in urls:
-                # Check for duplicates
-                duplicate_exists = await self.discourse_api.check_for_duplicate(url)
-                if duplicate_exists:
-                    await evt.reply(f"A post with this URL already exists: {url}")
-                    continue
-
-                # Scrape content
-                content = await scrape_content(url)
-                if not content:
-                    await evt.reply(f"Failed to scrape content from {url}")
-                    continue
-
-                # Summarize content
-                summary = await self.ai_integration.summarize_content(content)
-                if not summary:
-                    await evt.reply("Failed to summarize the content.")
-                    continue
-
-                # Generate bypass links
-                bypass_links = generate_bypass_links(url)
-
-                # Prepare message body
-                post_body = (
-                    f"{summary}\n\n"
-                    f"Original Link: {bypass_links['original']}\n"
-                    f"12ft.io Link: {bypass_links['12ft']}\n"
-                    f"Archive.org Link: {bypass_links['archive']}"
-                )
-
-                # Generate title
-                title = await self.generate_title(summary)
-                if not title:
-                    title = "Default Title"
-
-                # Create the post on Discourse
-                tags = ["posted-link"]
-                topic_id = self.config["unsorted_category_id"]
-                post_url, error = await self.discourse_api.create_post(
-                    title=title,
-                    raw=post_body,
-                    category_id=topic_id,
-                    tags=tags,
-                )
-
-                if post_url:
-                    await evt.reply(f"Post created successfully! URL: {post_url}")
-                else:
-                    await evt.reply(f"Failed to create post: {error}")
+                await evt.reply(f"Failed to create post: {error}")
