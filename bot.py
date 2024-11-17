@@ -47,6 +47,9 @@ class Config(BaseProxyConfig):
         helper.copy("search_trigger")
         helper.copy("post_trigger")
         helper.copy("help_trigger")
+
+        # URL patterns to check for in the message body
+        helper.copy("url_patterns")
 # Main plugin class
 class MatrixToDiscourseBot(Plugin):
     async def start(self) -> None:
@@ -292,6 +295,7 @@ class MatrixToDiscourseBot(Plugin):
         except Exception as e:
             self.log.error(f"Error processing !fsearch command: {e}")
             await evt.reply(f"An error occurred: {e}")
+
     @event.on(EventType.ROOM_MESSAGE)
     async def handle_message(self, evt: MessageEvent) -> None:
         if evt.content.msgtype != MessageType.TEXT:
