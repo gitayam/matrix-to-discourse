@@ -10,7 +10,7 @@ from maubot import Plugin, MessageEvent
 from maubot.handlers import command, event
 import aiohttp
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
-
+from url_handler import generate_bypass_links
 # Config class to manage configuration
 class Config(BaseProxyConfig):
     def do_update(self, helper: ConfigUpdateHelper) -> None:
@@ -309,3 +309,21 @@ class MatrixToDiscourseBot(Plugin):
             if re.search(pattern, message_body):
                 await self.process_link(evt, message_body)
                 break
+    
+    @command.new(name=self.config["url_post_trigger"], require_subcommand=False)
+    async def post_url_to_discourse(self, evt: MessageEvent) -> None:
+        self.log.info(f"Command !{self.config['url_post_trigger']} triggered.")
+
+        if not evt.content.get_reply_to():
+            await evt.reply("You must reply to a message containing a URL to use this command.")
+            return
+
+        replied_event = await evt.client.get_event(evt.room_id, evt.content.get_reply_to())
+        message_body = replied_event.content.body
+
+        urls = extract_urls(message_body)
+        if not urls:
+            await evt.reply("No URLs found in the replied message.")
+            return
+
+        await self.process_link(evt, message_body)
