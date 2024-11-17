@@ -4,6 +4,7 @@
 search_trigger="fsearch"
 post_trigger="fpost"
 help_trigger="fhelp"
+url_post_trigger="furl"
 ###### Discourse Configuration ######
 # To get your API key, go to https://discourse.example.com/admin/api/keys
 # replace "discourse.example.com" with your Discourse URL
@@ -58,4 +59,8 @@ google:
   max_tokens: 3000
   temperature: 1
 
-
+###### URL Pattern Configuration ######
+# The bot will only respond to URLs that match these patterns
+url_patterns:
+  - 'https?://example\.com/.*'
+  - 'https?://anotherdomain\.org/articles/.*'
