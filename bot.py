@@ -292,3 +292,14 @@ class MatrixToDiscourseBot(Plugin):
         except Exception as e:
             self.log.error(f"Error processing !fsearch command: {e}")
             await evt.reply(f"An error occurred: {e}")
+    @event.on(EventType.ROOM_MESSAGE)
+    async def handle_message(self, evt: MessageEvent) -> None:
+        if evt.content.msgtype != MessageType.TEXT:
+            return
+
+        message_body = evt.content.body
+        url_patterns = self.config["url_patterns"]
+        for pattern in url_patterns:
+            if re.search(pattern, message_body):
+                await self.process_link(evt, message_body)
+                break
