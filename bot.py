@@ -1,12 +1,11 @@
-# bot.py
-
 import asyncio
 import json
 import re
 import traceback
 import aiohttp
 import logging
-from datetime import datetime
+import argparse
+from datetime import datetime, timedelta
 from typing import Type, Dict, List, Optional
 
 from mautrix.client import Client
@@ -79,7 +78,8 @@ class Config(BaseProxyConfig):
             self["url_patterns"] = list(helper.base["url_patterns"])
         else:
             self["url_patterns"] = []
-# AIIntegration class (from ai_integration.py)
+
+# AIIntegration class
 class AIIntegration:
     def __init__(self, config, log):
         self.config = config
@@ -275,7 +275,7 @@ class AIIntegration:
             self.log.error(f"Error summarizing with Google: {e}\n{tb}")
             return None
 
-# DiscourseAPI class (from discourse_api.py)
+# DiscourseAPI class
 class DiscourseAPI:
     def __init__(self, config, log):
         self.config = config
@@ -365,7 +365,7 @@ class DiscourseAPI:
                     self.log.error(f"Discourse API error: {response.status} {response_json}")
                     return None
 
-# URL handling functions (from url_handler.py)
+# URL handling functions
 def extract_urls(text: str) -> List[str]:
     url_regex = r'(https?://\S+)'
     return re.findall(url_regex, text)
@@ -378,19 +378,20 @@ def generate_bypass_links(url: str) -> Dict[str, str]:
     }
     return links
 
-async def scrape_content(url: str) -> str:
+async def scrape_content(url: str) -> Optional[str]:
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
+            async with session.get(url, timeout=10) as response:
                 if response.status != 200:
                     logger.error(f"Failed to retrieve content from {url}: HTTP {response.status}")
                     return None
                 html = await response.text()
                 cleaner = HTMLCleaner()
                 cleaner.feed(html)
-                return cleaner.get_cleaned_text()
+                content = cleaner.get_cleaned_text()
+                return content if content else None
     except Exception as e:
-        logger.error(f"Error scraping content from {url}: {e}")
+        logger.error(f"Error scraping content from {url}: {e}", exc_info=True)
         return None
 
 # Main plugin class
@@ -417,6 +418,8 @@ class MatrixToDiscourseBot(Plugin):
         help_msg = (
             "Welcome to the Community Forum Bot!\n\n"
             f"To create a post on the forum, reply to a message with `!{self.config['post_trigger']}`.\n"
+            f"To summarize the last N messages, use `!{self.config['post_trigger']} -n <number>`.\n"
+            f"To summarize messages from a timeframe, use `!{self.config['post_trigger']} -h <hours> -m <minutes> -d <days>`.\n"
             f"To search the forum, use `!{self.config['search_trigger']} <query>`.\n"
             f"To post a URL, reply to a message containing a URL with `!{self.config['url_post_trigger']}`.\n"
             f"For help, use `!{self.config['help_trigger']}`."
@@ -425,77 +428,152 @@ class MatrixToDiscourseBot(Plugin):
 
     # Command to handle the post command
     @command.new(name=lambda self: self.config["post_trigger"], require_subcommand=False)
-    @command.argument("title", pass_raw=True, required=False)
-    async def post_to_discourse_command(self, evt: MessageEvent, title: str = None) -> None:
-        await self.handle_post_to_discourse(evt, title)
+    @command.argument("args", pass_raw=True, required=False)
+    async def post_to_discourse_command(self, evt: MessageEvent, args: str = None) -> None:
+        await self.handle_post_to_discourse(evt, args)
 
-    async def handle_post_to_discourse(self, evt: MessageEvent, title: str = None) -> None:
-        self.log.info(f"Command !{self.config['post_trigger']} triggered.")
-        await evt.reply(
-            "Creating a Forum post, log in to the community forum to view all posts and to engage on the forum..."
-        )
+    async def handle_post_to_discourse(self, evt: MessageEvent, args: str = None) -> None:
+        post_trigger = self.config["post_trigger"]
+        self.log.info(f"Command !{post_trigger} triggered.")
+
+        parser = argparse.ArgumentParser(prog=f"!{post_trigger}", add_help=False)
+        parser.add_argument("-n", "--number", type=int, help="Number of messages to summarize")
+        parser.add_argument("-h", "--hours", type=int, help="Number of hours to look back")
+        parser.add_argument("-m", "--minutes", type=int, help="Number of minutes to look back")
+        parser.add_argument("-d", "--days", type=int, help="Number of days to look back")
+        parser.add_argument("title", nargs='*', help="Optional title for the post")
 
         try:
-            self.log.info(f"Received event body: {evt.content.body}")
+            args_namespace = parser.parse_args(args.split() if args else [])
+        except Exception as e:
+            await evt.reply(f"Error parsing arguments: {e}")
+            return
 
-            # Check if the message is a reply to another message
-            if not evt.content.get_reply_to():
-                await evt.reply("You must reply to a message to use this command.")
+        # Extract values
+        number = args_namespace.number
+        hours = args_namespace.hours
+        minutes = args_namespace.minutes
+        days = args_namespace.days
+        title = ' '.join(args_namespace.title) if args_namespace.title else None
+
+        # Validate arguments
+        if (number and (hours or minutes or days)):
+            await evt.reply("Please specify either a number of messages (-n) or a timeframe (-h/-m/-d), not both.")
+            return
+
+        if not (number or hours or minutes or days or evt.content.get_reply_to()):
+            await evt.reply("Please reply to a message or specify either a number of messages (-n) or a timeframe (-h/-m/-d).")
+            return
+
+        # Fetch messages
+        messages = []
+        if number:
+            messages = await self.fetch_messages_by_number(evt, number)
+            if len(messages) < number:
+                await evt.reply(f"Only found {len(messages)} messages to summarize.")
+        elif hours or minutes or days:
+            total_seconds = (days or 0) * 86400 + (hours or 0) * 3600 + (minutes or 0) * 60
+            time_delta = timedelta(seconds=total_seconds)
+            messages = await self.fetch_messages_by_time(evt, time_delta)
+            if not messages:
+                await evt.reply("No messages found in the specified timeframe.")
                 return
-
-            # Extract the body of the replied-to message
+        else:
+            # Default to the replied-to message
             replied_event = await evt.client.get_event(
                 evt.room_id, evt.content.get_reply_to()
             )
-            message_body = replied_event.content.body
-            self.log.info(f"Message body: {message_body}")
+            messages = [replied_event]
 
-            if not message_body:
-                await evt.reply("The replied-to message is empty.")
-                return
+        if not messages:
+            await evt.reply("No messages found to summarize.")
+            return
 
-            # Determine if a title is required
-            ai_model_type = self.config["ai_model_type"]
+        # Combine message bodies
+        message_bodies = [event.content.body for event in reversed(messages) if hasattr(event.content, 'body')]
+        combined_message = "\n\n".join(message_bodies)
 
-            if ai_model_type == "none":
-                # If AI is set to 'none', title is required from the user
-                if not title:
-                    await evt.reply(
-                        "A title is required since AI model is set to 'none'. Please provide a title."
-                    )
-                    return
-            else:
-                # Use provided title or generate one using the AI model
-                if not title:
-                    title = await self.generate_title(message_body)
-                if not title:
-                    title = "Default Title"  # Fallback title if generation fails
+        # Generate summary using AI model
+        summary = await self.ai_integration.summarize_content(combined_message)
+        if not summary:
+            self.log.warning("Failed to generate summary.")
+            summary = combined_message  # Fallback to combined message
 
-            self.log.info(f"Generated Title: {title}")
+        # Determine if a title is required
+        ai_model_type = self.config["ai_model_type"]
 
-            # Get the topic ID based on the room ID
-            topic_id = self.config["matrix_to_discourse_topic"].get(
-                evt.room_id, self.config["unsorted_category_id"]
-            )
-
-            # Create the post on Discourse
-            tags = []  # You can modify tags as needed
-            post_url, error = await self.discourse_api.create_post(
-                title=title,
-                raw=message_body,
-                category_id=topic_id,
-                tags=tags,
-            )
-            if post_url:
+        if ai_model_type == "none":
+            # If AI is set to 'none', title is required from the user
+            if not title:
                 await evt.reply(
-                    f"Post created successfully! URL: {post_url} \n\n Log in to the community to engage with this post."
+                    "A title is required since AI model is set to 'none'. Please provide a title."
                 )
-            else:
-                await evt.reply(f"Failed to create post: {error}")
+                return
+        else:
+            # Use provided title or generate one using the AI model
+            if not title:
+                title = await self.generate_title(summary)
+            if not title:
+                title = "Untitled Post"  # Fallback title if generation fails
 
-        except Exception as e:
-            self.log.error(f"Error processing !{self.config['post_trigger']} command: {e}")
-            await evt.reply(f"An error occurred: {e}")
+        self.log.info(f"Generated Title: {title}")
+
+        # Get the topic ID based on the room ID
+        topic_id = self.config["matrix_to_discourse_topic"].get(
+            evt.room_id, self.config["unsorted_category_id"]
+        )
+
+        # Create the post on Discourse
+        tags = []  # Modify tags as needed
+        post_url, error = await self.discourse_api.create_post(
+            title=title,
+            raw=summary,
+            category_id=topic_id,
+            tags=tags,
+        )
+        if post_url:
+            await evt.reply(
+                f"Post created successfully! Title: {title}, URL: {post_url} \n\n Log in to the community to engage with this post."
+            )
+        else:
+            await evt.reply(f"Failed to create post: {error}")
+
+    # Fetch messages by number
+    async def fetch_messages_by_number(self, evt: MessageEvent, number: int) -> List[MessageEvent]:
+        messages = []
+        prev_batch = evt.event_id
+        while len(messages) < number:
+            response = await self.client.get_room_messages(evt.room_id, prev_batch, direction='b', limit=100)
+            chunk = response.chunk
+            if not chunk:
+                break  # No more messages
+            for event in chunk:
+                if event.type == EventType.ROOM_MESSAGE and event.sender != self.client.mxid:
+                    messages.append(event)
+                    if len(messages) >= number:
+                        break
+            prev_batch = response.end
+        return messages[:number]
+
+    # Fetch messages by timeframe
+    async def fetch_messages_by_time(self, evt: MessageEvent, time_delta: timedelta) -> List[MessageEvent]:
+        messages = []
+        prev_batch = evt.event_id
+        end_time = datetime.utcnow() - time_delta
+
+        while True:
+            response = await self.client.get_room_messages(evt.room_id, prev_batch, direction='b', limit=100)
+            chunk = response.chunk
+            if not chunk:
+                break  # No more messages
+            for event in chunk:
+                if event.type == EventType.ROOM_MESSAGE and event.sender != self.client.mxid:
+                    event_time = datetime.utcfromtimestamp(event.server_timestamp / 1000)
+                    if event_time < end_time:
+                        return messages
+                    messages.append(event)
+            prev_batch = response.end
+        return messages
 
     # Function to generate title
     async def generate_title(self, message_body: str) -> Optional[str]:
@@ -563,15 +641,6 @@ class MatrixToDiscourseBot(Plugin):
 
         if evt.content.msgtype != MessageType.TEXT:
             return
-
-        # Disable automatic URL processing
-        # message_body = evt.content.body
-        # url_patterns = self.config.get("url_patterns", [])
-        # for pattern in url_patterns:
-        #     if re.search(pattern, message_body):
-        #         await self.process_link(evt, message_body)
-        #         break
-
     # Command to process URLs in replies
     @command.new(name=lambda self: self.config["url_post_trigger"], require_subcommand=False)
     async def post_url_to_discourse_command(self, evt: MessageEvent) -> None:
@@ -656,57 +725,7 @@ class MatrixToDiscourseBot(Plugin):
             )
 
             if post_url:
-                # include title in the reply
+                # Include title in the reply
                 await evt.reply(f"Post created successfully! Title: {title}, URL: {post_url}")
             else:
-                await evt.reply(f"Failed to create post: {error}")        
-                urls = extract_urls(message_body)
-            for url in urls:
-                # Check for duplicates
-                duplicate_exists = await self.discourse_api.check_for_duplicate(url)
-                if duplicate_exists:
-                    await evt.reply(f"A post with this URL already exists: {url}")
-                    continue
-
-                # Scrape content
-                content = await scrape_content(url)
-                if not content:
-                    await evt.reply(f"Failed to scrape content from {url}")
-                    continue
-
-                # Summarize content
-                summary = await self.ai_integration.summarize_content(content)
-                if not summary:
-                    await evt.reply("Failed to summarize the content.")
-                    continue
-
-                # Generate bypass links
-                bypass_links = generate_bypass_links(url)
-
-                # Prepare message body
-                post_body = (
-                    f"{summary}\n\n"
-                    f"Original Link: {bypass_links['original']}\n"
-                    f"12ft.io Link: {bypass_links['12ft']}\n"
-                    f"Archive.org Link: {bypass_links['archive']}"
-                )
-
-                # Generate title
-                title = await self.generate_title(summary)
-                if not title:
-                    title = "Default Title"
-
-                # Create the post on Discourse
-                tags = ["posted-link"]
-                topic_id = self.config["unsorted_category_id"]
-                post_url, error = await self.discourse_api.create_post(
-                    title=title,
-                    raw=post_body,
-                    category_id=topic_id,
-                    tags=tags,
-                )
-
-                if post_url:
-                    await evt.reply(f"Post created successfully! URL: {post_url}")
-                else:
-                    await evt.reply(f"Failed to create post: {error}")
+                await evt.reply(f"Failed to create post: {error}")
