@@ -342,29 +342,35 @@ class MatrixToDiscourseBot(Plugin):
         return Config
 
     # Command to handle the help event
-    @command.new(name=lambda self: self.config["help_trigger"], require_subcommand=False)
+    @command.new(name="help", require_subcommand=False)
     async def help_command(self, evt: MessageEvent) -> None:
         await self.handle_help(evt)
 
     async def handle_help(self, evt: MessageEvent) -> None:
-        self.log.info(f"Command !{self.config['help_trigger']} triggered.")
+        help_trigger = self.config["help_trigger"]
+        post_trigger = self.config["post_trigger"]
+        search_trigger = self.config["search_trigger"]
+        url_post_trigger = self.config["url_post_trigger"]
+
+        self.log.info(f"Command !{help_trigger} triggered.")
         help_msg = (
             "Welcome to the Community Forum Bot!\n\n"
-            f"To create a post on the forum, reply to a message with `!{self.config['post_trigger']}`.\n"
-            f"To search the forum, use `!{self.config['search_trigger']} <query>`.\n"
-            f"To post a URL, reply to a message containing a URL with `!{self.config['url_post_trigger']}`.\n"
-            f"For help, use `!{self.config['help_trigger']}`."
+            f"To create a post on the forum, reply to a message with `!{post_trigger}`.\n"
+            f"To search the forum, use `!{search_trigger} <query>`.\n"
+            f"To post a URL, reply to a message containing a URL with `!{url_post_trigger}`.\n"
+            f"For help, use `!{help_trigger}`."
         )
         await evt.reply(help_msg)
 
     # Command to handle the post command
-    @command.new(name=lambda self: self.config["post_trigger"], require_subcommand=False)
+    @command.new(name="post", require_subcommand=False)
     @command.argument("title", pass_raw=True, required=False)
     async def post_to_discourse_command(self, evt: MessageEvent, title: str = None) -> None:
         await self.handle_post_to_discourse(evt, title)
 
     async def handle_post_to_discourse(self, evt: MessageEvent, title: str = None) -> None:
-        self.log.info(f"Command !{self.config['post_trigger']} triggered.")
+        post_trigger = self.config["post_trigger"]
+        self.log.info(f"Command !{post_trigger} triggered.")
         await evt.reply(
             "Creating a Forum post, log in to the community forum to view all posts and to engage on the forum..."
         )
@@ -428,7 +434,7 @@ class MatrixToDiscourseBot(Plugin):
                 await evt.reply(f"Failed to create post: {error}")
 
         except Exception as e:
-            self.log.error(f"Error processing !{self.config['post_trigger']} command: {e}")
+            self.log.error(f"Error processing !{post_trigger} command: {e}")
             await evt.reply(f"An error occurred: {e}")
 
     # Function to generate title
@@ -436,13 +442,14 @@ class MatrixToDiscourseBot(Plugin):
         return await self.ai_integration.generate_title(message_body)
 
     # Command to search the discourse
-    @command.new(name=lambda self: self.config["search_trigger"], require_subcommand=False)
+    @command.new(name="search", require_subcommand=False)
     @command.argument("query", pass_raw=True, required=True)
     async def search_discourse_command(self, evt: MessageEvent, query: str) -> None:
         await self.handle_search_discourse(evt, query)
 
     async def handle_search_discourse(self, evt: MessageEvent, query: str) -> None:
-        self.log.info(f"Command !{self.config['search_trigger']} triggered.")
+        search_trigger = self.config["search_trigger"]
+        self.log.info(f"Command !{search_trigger} triggered.")
         await evt.reply("Searching the forum...")
 
         try:
@@ -486,7 +493,7 @@ class MatrixToDiscourseBot(Plugin):
             else:
                 await evt.reply("Failed to perform search.")
         except Exception as e:
-            self.log.error(f"Error processing !{self.config['search_trigger']} command: {e}")
+            self.log.error(f"Error processing !{search_trigger} command: {e}")
             await evt.reply(f"An error occurred: {e}")
 
     # Handle messages with URLs
@@ -498,23 +505,16 @@ class MatrixToDiscourseBot(Plugin):
 
         if evt.content.msgtype != MessageType.TEXT:
             return
-
-        # Disable automatic URL processing
-        # Uncomment the code below if you wish to enable automatic URL processing
-        # message_body = evt.content.body
-        # url_patterns = self.config.get("url_patterns", [])
-        # for pattern in url_patterns:
-        #     if re.search(pattern, message_body):
-        #         await self.process_link(evt, message_body)
-        #         break
+        pass
 
     # Command to process URLs in replies
-    @command.new(name=lambda self: self.config["url_post_trigger"], require_subcommand=False)
+    @command.new(name="url", require_subcommand=False)
     async def post_url_to_discourse_command(self, evt: MessageEvent) -> None:
         await self.handle_post_url_to_discourse(evt)
 
     async def handle_post_url_to_discourse(self, evt: MessageEvent) -> None:
-        self.log.info(f"Command !{self.config['url_post_trigger']} triggered.")
+        url_post_trigger = self.config["url_post_trigger"]
+        self.log.info(f"Command !{url_post_trigger} triggered.")
 
         if not evt.content.get_reply_to():
             await evt.reply("You must reply to a message containing a URL to use this command.")
@@ -572,7 +572,6 @@ class MatrixToDiscourseBot(Plugin):
                 title = await self.generate_title(f"URL: {url}, Domain: {url.split('/')[2]}")
 
             if not title:
-                # Include the displayname in the title
                 title = "Untitled Post by " + displayname
 
             # Generate bypass links
@@ -602,62 +601,3 @@ class MatrixToDiscourseBot(Plugin):
                 await evt.reply(f"Post created successfully! Title: {title}, URL: {post_url}")
             else:
                 await evt.reply(f"Failed to create post: {error}")
-            urls = extract_urls(message_body)
-            username = evt.sender.split(":")[0]  # Extract the username from the sender
-            for url in urls:
-                # Check for duplicates
-                duplicate_exists = await self.discourse_api.check_for_duplicate(url)
-                if duplicate_exists:
-                    await evt.reply(f"A post with this URL already exists: {url}")
-                    continue
-
-                # Scrape content
-                content = await scrape_content(url)
-                summary = None
-                if content:
-                    # Summarize content if scraping was successful
-                    summary = await self.ai_integration.summarize_content(content)
-                    if not summary:
-                        self.log.warning(f"Summarization failed for URL: {url}")
-                else:
-                    self.log.warning(f"Scraping content failed for URL: {url}")
-
-                # Generate title
-                title = None
-                if summary:
-                    title = await self.generate_title(summary)
-                else:
-                    self.log.info(f"Generating title using URL and domain for: {url}")
-                    title = await self.generate_title(f"URL: {url}, Domain: {url.split('/')[2]}")
-
-                if not title:
-                    #include the displayname in the title
-                    title = "Untitled Post by " + displayname
-
-                # Generate bypass links
-                bypass_links = generate_bypass_links(url)
-
-                # Prepare message body
-                post_body = (
-                    f"**Posted by:** @{username}\n\n"
-                    f"{summary or 'Content could not be scraped or summarized.'}\n\n"
-                    f"**Original Link:** {bypass_links['original']}\n"
-                    f"**12ft.io Link:** {bypass_links['12ft']}\n"
-                    f"**Archive.org Link:** {bypass_links['archive']}"
-                )
-
-                # Create the post on Discourse
-                tags = ["posted-link"]
-                topic_id = self.config["unsorted_category_id"]
-                post_url, error = await self.discourse_api.create_post(
-                    title=title,
-                    raw=post_body,
-                    category_id=topic_id,
-                    tags=tags,
-                )
-
-                if post_url:
-                    # Include title in the reply
-                    await evt.reply(f"Post created successfully! Title: {title}, URL: {post_url}")
-                else:
-                    await evt.reply(f"Failed to create post: {error}")
