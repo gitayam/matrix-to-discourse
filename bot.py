@@ -540,6 +540,11 @@ class MatrixToDiscourseBot(Plugin):
     async def process_link(self, evt: MessageEvent, message_body: str) -> None:
         urls = extract_urls(message_body)
         username = evt.sender.split(":")[0]  # Extract the username from the sender
+        try:
+            displayname = await self.client.get_displayname(evt.sender) or username
+        except Exception as e:
+            self.log.error(f"Failed to get display name for {evt.sender}: {e}")
+            displayname = username  # Fallback to username
         for url in urls:
             # Check for duplicates
             duplicate_exists = await self.discourse_api.check_for_duplicate(url)
@@ -567,7 +572,7 @@ class MatrixToDiscourseBot(Plugin):
                 title = await self.generate_title(f"URL: {url}, Domain: {url.split('/')[2]}")
 
             if not title:
-                #include the displayname in the title
+                # Include the displayname in the title
                 title = "Untitled Post by " + displayname
 
             # Generate bypass links
@@ -597,3 +602,62 @@ class MatrixToDiscourseBot(Plugin):
                 await evt.reply(f"Post created successfully! Title: {title}, URL: {post_url}")
             else:
                 await evt.reply(f"Failed to create post: {error}")
+            urls = extract_urls(message_body)
+            username = evt.sender.split(":")[0]  # Extract the username from the sender
+            for url in urls:
+                # Check for duplicates
+                duplicate_exists = await self.discourse_api.check_for_duplicate(url)
+                if duplicate_exists:
+                    await evt.reply(f"A post with this URL already exists: {url}")
+                    continue
+
+                # Scrape content
+                content = await scrape_content(url)
+                summary = None
+                if content:
+                    # Summarize content if scraping was successful
+                    summary = await self.ai_integration.summarize_content(content)
+                    if not summary:
+                        self.log.warning(f"Summarization failed for URL: {url}")
+                else:
+                    self.log.warning(f"Scraping content failed for URL: {url}")
+
+                # Generate title
+                title = None
+                if summary:
+                    title = await self.generate_title(summary)
+                else:
+                    self.log.info(f"Generating title using URL and domain for: {url}")
+                    title = await self.generate_title(f"URL: {url}, Domain: {url.split('/')[2]}")
+
+                if not title:
+                    #include the displayname in the title
+                    title = "Untitled Post by " + displayname
+
+                # Generate bypass links
+                bypass_links = generate_bypass_links(url)
+
+                # Prepare message body
+                post_body = (
+                    f"**Posted by:** @{username}\n\n"
+                    f"{summary or 'Content could not be scraped or summarized.'}\n\n"
+                    f"**Original Link:** {bypass_links['original']}\n"
+                    f"**12ft.io Link:** {bypass_links['12ft']}\n"
+                    f"**Archive.org Link:** {bypass_links['archive']}"
+                )
+
+                # Create the post on Discourse
+                tags = ["posted-link"]
+                topic_id = self.config["unsorted_category_id"]
+                post_url, error = await self.discourse_api.create_post(
+                    title=title,
+                    raw=post_body,
+                    category_id=topic_id,
+                    tags=tags,
+                )
+
+                if post_url:
+                    # Include title in the reply
+                    await evt.reply(f"Post created successfully! Title: {title}, URL: {post_url}")
+                else:
+                    await evt.reply(f"Failed to create post: {error}")
