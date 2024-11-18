@@ -7,7 +7,7 @@ import logging
 import argparse
 from datetime import datetime, timedelta
 from typing import Type, Dict, List, Optional
-
+from mautrix.types import Direction
 from mautrix.client import Client
 from mautrix.types import (
     Format,
@@ -427,8 +427,7 @@ class MatrixToDiscourseBot(Plugin):
         await evt.reply(help_msg)
 
     # Command to handle the post command
-    @command.new(name=lambda self: self.config["post_trigger"], require_subcommand=False)
-    @command.argument("args", pass_raw=True, required=False)
+    @command.new(name=lambda self: self.config["post_trigger"], require_subcommand=False, pass_raw=True)
     async def post_to_discourse_command(self, evt: MessageEvent, args: str = None) -> None:
         await self.handle_post_to_discourse(evt, args)
 
@@ -543,7 +542,7 @@ class MatrixToDiscourseBot(Plugin):
         messages = []
         prev_batch = evt.event_id
         while len(messages) < number:
-            response = await self.client.get_room_messages(evt.room_id, prev_batch, direction='b', limit=100)
+            response = await self.client.get_messages(evt.room_id, prev_batch, direction=Direction.BACKWARD, limit=100)
             chunk = response.chunk
             if not chunk:
                 break  # No more messages
@@ -554,7 +553,6 @@ class MatrixToDiscourseBot(Plugin):
                         break
             prev_batch = response.end
         return messages[:number]
-
     # Fetch messages by timeframe
     async def fetch_messages_by_time(self, evt: MessageEvent, time_delta: timedelta) -> List[MessageEvent]:
         messages = []
@@ -562,7 +560,7 @@ class MatrixToDiscourseBot(Plugin):
         end_time = datetime.utcnow() - time_delta
 
         while True:
-            response = await self.client.get_room_messages(evt.room_id, prev_batch, direction='b', limit=100)
+            response = await self.client.get_messages(evt.room_id, prev_batch, direction=Direction.BACKWARD, limit=100)
             chunk = response.chunk
             if not chunk:
                 break  # No more messages
@@ -574,7 +572,6 @@ class MatrixToDiscourseBot(Plugin):
                     messages.append(event)
             prev_batch = response.end
         return messages
-
     # Function to generate title
     async def generate_title(self, message_body: str) -> Optional[str]:
         return await self.ai_integration.generate_title(message_body)
