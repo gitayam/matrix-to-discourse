@@ -7,15 +7,16 @@ import logging
 import argparse
 from datetime import datetime, timedelta
 from typing import Type, Dict, List, Optional
-from mautrix.types import Direction
-from mautrix.client import Client
+
 from mautrix.types import (
     Format,
     TextMessageEventContent,
     EventType,
     RelationType,
     MessageType,
+    SyncToken,
 )
+from mautrix.client import Client
 from maubot import Plugin, MessageEvent
 from maubot.handlers import command, event
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
@@ -427,7 +428,8 @@ class MatrixToDiscourseBot(Plugin):
         await evt.reply(help_msg)
 
     # Command to handle the post command
-    @command.new(name=lambda self: self.config["post_trigger"], require_subcommand=False, pass_raw=True)
+    @command.new(name=lambda self: self.config["post_trigger"], require_subcommand=False)
+    @command.argument("args", pass_raw=True, required=False)
     async def post_to_discourse_command(self, evt: MessageEvent, args: str = None) -> None:
         await self.handle_post_to_discourse(evt, args)
 
@@ -446,6 +448,7 @@ class MatrixToDiscourseBot(Plugin):
             args_namespace = parser.parse_args(args.split() if args else [])
         except Exception as e:
             await evt.reply(f"Error parsing arguments: {e}")
+            self.log.error(f"Argument parsing error: {e}")
             return
 
         # Extract values
@@ -456,46 +459,62 @@ class MatrixToDiscourseBot(Plugin):
         title = ' '.join(args_namespace.title) if args_namespace.title else None
 
         # Validate arguments
+        reply_to = evt.content.get_reply_to()
+        self.log.debug(f"Reply to event: {reply_to}")
         if (number and (hours or minutes or days)):
             await evt.reply("Please specify either a number of messages (-n) or a timeframe (-h/-m/-d), not both.")
+            self.log.warning("User specified both number and timeframe arguments.")
             return
 
-        if not (number or hours or minutes or days or evt.content.get_reply_to()):
+        if not (number or hours or minutes or days or reply_to):
             await evt.reply("Please reply to a message or specify either a number of messages (-n) or a timeframe (-h/-m/-d).")
+            self.log.warning("User did not specify arguments or reply to a message.")
             return
 
         # Fetch messages
         messages = []
         if number:
             messages = await self.fetch_messages_by_number(evt, number)
+            self.log.debug(f"Fetched {len(messages)} messages with number argument.")
             if len(messages) < number:
                 await evt.reply(f"Only found {len(messages)} messages to summarize.")
+                self.log.info(f"Only {len(messages)} messages found, less than requested {number}.")
         elif hours or minutes or days:
             total_seconds = (days or 0) * 86400 + (hours or 0) * 3600 + (minutes or 0) * 60
             time_delta = timedelta(seconds=total_seconds)
             messages = await self.fetch_messages_by_time(evt, time_delta)
+            self.log.debug(f"Fetched {len(messages)} messages with timeframe argument.")
             if not messages:
                 await evt.reply("No messages found in the specified timeframe.")
+                self.log.info("No messages found in the specified timeframe.")
                 return
         else:
             # Default to the replied-to message
-            replied_event = await evt.client.get_event(
-                evt.room_id, evt.content.get_reply_to()
-            )
-            messages = [replied_event]
+            try:
+                replied_event = await evt.client.get_event(
+                    evt.room_id, reply_to
+                )
+                messages = [replied_event]
+                self.log.debug("Fetched the replied-to message.")
+            except Exception as e:
+                await evt.reply("Failed to retrieve the replied-to message.")
+                self.log.error(f"Failed to retrieve replied-to message: {e}")
+                return
 
         if not messages:
+            self.log.warning("No messages found to summarize.")
             await evt.reply("No messages found to summarize.")
             return
 
         # Combine message bodies
         message_bodies = [event.content.body for event in reversed(messages) if hasattr(event.content, 'body')]
         combined_message = "\n\n".join(message_bodies)
+        self.log.debug(f"Combined message for summarization: {combined_message}")
 
         # Generate summary using AI model
         summary = await self.ai_integration.summarize_content(combined_message)
         if not summary:
-            self.log.warning("Failed to generate summary.")
+            self.log.warning("Failed to generate summary. Using combined message as fallback.")
             summary = combined_message  # Fallback to combined message
 
         # Determine if a title is required
@@ -507,20 +526,24 @@ class MatrixToDiscourseBot(Plugin):
                 await evt.reply(
                     "A title is required since AI model is set to 'none'. Please provide a title."
                 )
+                self.log.info("User did not provide a title while AI model is set to 'none'.")
                 return
         else:
             # Use provided title or generate one using the AI model
             if not title:
                 title = await self.generate_title(summary)
+                self.log.debug(f"Generated title: {title}")
             if not title:
                 title = "Untitled Post"  # Fallback title if generation fails
+                self.log.warning("Title generation failed. Using fallback title.")
 
-        self.log.info(f"Generated Title: {title}")
+        self.log.info(f"Final Title: {title}")
 
         # Get the topic ID based on the room ID
         topic_id = self.config["matrix_to_discourse_topic"].get(
             evt.room_id, self.config["unsorted_category_id"]
         )
+        self.log.debug(f"Using topic_id: {topic_id} for Discourse post.")
 
         # Create the post on Discourse
         tags = []  # Modify tags as needed
@@ -530,48 +553,64 @@ class MatrixToDiscourseBot(Plugin):
             category_id=topic_id,
             tags=tags,
         )
+        self.log.debug(f"Discourse post creation result: URL={post_url}, Error={error}")
+
         if post_url:
             await evt.reply(
-                f"Post created successfully! Title: {title}, URL: {post_url} \n\n Log in to the community to engage with this post."
+                f"Post created successfully! Title: {title}, URL: {post_url}"
             )
+            self.log.info(f"Successfully created post on Discourse: {post_url}")
         else:
             await evt.reply(f"Failed to create post: {error}")
+            self.log.error(f"Failed to create post on Discourse: {error}")
 
-    # Fetch messages by number
+    # Fetch messages by number using get_event_context
     async def fetch_messages_by_number(self, evt: MessageEvent, number: int) -> List[MessageEvent]:
         messages = []
-        prev_batch = evt.event_id
-        while len(messages) < number:
-            response = await self.client.get_messages(evt.room_id, prev_batch, direction=Direction.BACKWARD, limit=100)
-            chunk = response.chunk
-            if not chunk:
-                break  # No more messages
-            for event in chunk:
+        # Fetch context around the event
+        try:
+            context = await self.client.get_event_context(evt.room_id, evt.event_id, limit=number + 10)
+            events_before = context.events_before
+            self.log.debug(f"Events before fetched: {len(events_before)}")
+            if not events_before:
+                self.log.warning("No events found before the current event.")
+            for event in reversed(events_before):
                 if event.type == EventType.ROOM_MESSAGE and event.sender != self.client.mxid:
                     messages.append(event)
                     if len(messages) >= number:
                         break
-            prev_batch = response.end
-        return messages[:number]
-    # Fetch messages by timeframe
+            self.log.info(f"Fetched {len(messages)} messages by number.")
+            return messages
+        except Exception as e:
+            self.log.error(f"Error fetching messages by number: {e}")
+            return messages
+
+    # Fetch messages by timeframe using timestamps
     async def fetch_messages_by_time(self, evt: MessageEvent, time_delta: timedelta) -> List[MessageEvent]:
         messages = []
-        prev_batch = evt.event_id
-        end_time = datetime.utcnow() - time_delta
+        current_time = datetime.utcnow()
+        end_time = current_time - time_delta
 
-        while True:
-            response = await self.client.get_messages(evt.room_id, prev_batch, direction=Direction.BACKWARD, limit=100)
-            chunk = response.chunk
-            if not chunk:
-                break  # No more messages
-            for event in chunk:
+        # Fetch context around the event
+        try:
+            context = await self.client.get_event_context(evt.room_id, evt.event_id, limit=100)
+            events_before = context.events_before
+            self.log.debug(f"Events before fetched: {len(events_before)}")
+            if not events_before:
+                self.log.warning("No events found before the current event.")
+            for event in reversed(events_before):
                 if event.type == EventType.ROOM_MESSAGE and event.sender != self.client.mxid:
                     event_time = datetime.utcfromtimestamp(event.server_timestamp / 1000)
                     if event_time < end_time:
-                        return messages
+                        self.log.debug(f"Event time {event_time} is older than end_time {end_time}.")
+                        break
                     messages.append(event)
-            prev_batch = response.end
-        return messages
+            self.log.info(f"Fetched {len(messages)} messages by timeframe.")
+            return messages
+        except Exception as e:
+            self.log.error(f"Error fetching messages by timeframe: {e}")
+            return messages
+
     # Function to generate title
     async def generate_title(self, message_body: str) -> Optional[str]:
         return await self.ai_integration.generate_title(message_body)
@@ -583,8 +622,10 @@ class MatrixToDiscourseBot(Plugin):
         await self.handle_search_discourse(evt, query)
 
     async def handle_search_discourse(self, evt: MessageEvent, query: str) -> None:
-        self.log.info(f"Command !{self.config['search_trigger']} triggered.")
-        await evt.reply("Searching the forum...")
+        self.log.info(f"Command !{self.config['search_trigger']} triggered with query: {query}")
+
+        # Removed the initial reply "Searching the forum..."
+        # await evt.reply("Searching the forum...")  # Removed as per user request
 
         try:
             search_results = await self.discourse_api.search_discourse(query)
@@ -622,10 +663,13 @@ class MatrixToDiscourseBot(Plugin):
                     )
 
                     await evt.reply(f"Search results:\n{result_msg}")
+                    self.log.info("Search results sent to user.")
                 else:
                     await evt.reply("No results found.")
+                    self.log.info("No search results found.")
             else:
                 await evt.reply("Failed to perform search.")
+                self.log.error("Search_discourse returned None.")
         except Exception as e:
             self.log.error(f"Error processing !{self.config['search_trigger']} command: {e}")
             await evt.reply(f"An error occurred: {e}")
@@ -638,49 +682,73 @@ class MatrixToDiscourseBot(Plugin):
 
         if evt.content.msgtype != MessageType.TEXT:
             return
+
+        # Removed any code that might respond to URL messages automatically
+        # Since URL processing is handled via !furl command
+
     # Command to process URLs in replies
     @command.new(name=lambda self: self.config["url_post_trigger"], require_subcommand=False)
-    async def post_url_to_discourse_command(self, evt: MessageEvent) -> None:
-        await self.handle_post_url_to_discourse(evt)
+    @command.argument("args", pass_raw=True, required=False)  # Added to prevent duplication
+    async def post_url_to_discourse_command(self, evt: MessageEvent, args: str = None) -> None:
+        await self.handle_post_url_to_discourse(evt, args)
 
-    async def handle_post_url_to_discourse(self, evt: MessageEvent) -> None:
+    async def handle_post_url_to_discourse(self, evt: MessageEvent, args: str = None) -> None:
         self.log.info(f"Command !{self.config['url_post_trigger']} triggered.")
+
+        # Removed the initial reply "Creating a Forum post..."
+        # await evt.reply("Creating a Forum post...")  # Removed as per user request
 
         if not evt.content.get_reply_to():
             await evt.reply("You must reply to a message containing a URL to use this command.")
+            self.log.warning("User attempted !furl without replying to a message.")
             return
 
-        replied_event = await evt.client.get_event(
-            evt.room_id, evt.content.get_reply_to()
-        )
-        message_body = replied_event.content.body
+        try:
+            replied_event = await evt.client.get_event(
+                evt.room_id, evt.content.get_reply_to()
+            )
+            message_body = replied_event.content.body
+            self.log.debug(f"Replied message body: {message_body}")
+        except Exception as e:
+            await evt.reply("Failed to retrieve the replied-to message.")
+            self.log.error(f"Failed to retrieve replied-to message: {e}")
+            return
 
         if not message_body:
             await evt.reply("The replied-to message is empty.")
+            self.log.warning("Replied-to message is empty.")
             return
 
         urls = extract_urls(message_body)
         if not urls:
             await evt.reply("No URLs found in the replied message.")
+            self.log.warning("No URLs found in the replied message.")
             return
 
+        # Process each URL
         await self.process_link(evt, message_body)
 
     # Process links in messages
     async def process_link(self, evt: MessageEvent, message_body: str) -> None:
         urls = extract_urls(message_body)
+        self.log.debug(f"Extracted URLs for processing: {urls}")
         username = evt.sender.split(":")[0]  # Extract the username from the sender
+
         for url in urls:
+            self.log.info(f"Processing URL: {url}")
             # Check for duplicates
             duplicate_exists = await self.discourse_api.check_for_duplicate(url)
+            self.log.debug(f"Duplicate exists for URL {url}: {duplicate_exists}")
             if duplicate_exists:
                 await evt.reply(f"A post with this URL already exists: {url}")
+                self.log.info(f"Duplicate post detected for URL: {url}")
                 continue
 
             # Scrape content
             content = await scrape_content(url)
             summary = None
             if content:
+                self.log.debug(f"Content scraped successfully for URL: {url}")
                 # Summarize content if scraping was successful
                 summary = await self.ai_integration.summarize_content(content)
                 if not summary:
@@ -692,15 +760,20 @@ class MatrixToDiscourseBot(Plugin):
             title = None
             if summary:
                 title = await self.generate_title(summary)
+                self.log.debug(f"Generated title from summary: {title}")
             else:
                 self.log.info(f"Generating title using URL and domain for: {url}")
-                title = await self.generate_title(f"URL: {url}, Domain: {url.split('/')[2]}")
+                domain = url.split('/')[2] if len(url.split('/')) > 2 else "unknown-domain"
+                title = await self.generate_title(f"URL: {url}, Domain: {domain}")
+                self.log.debug(f"Generated title from URL and domain: {title}")
 
             if not title:
+                self.log.warning("Title generation failed. Using fallback title.")
                 title = "Untitled Post"
 
             # Generate bypass links
             bypass_links = generate_bypass_links(url)
+            self.log.debug(f"Bypass links generated: {bypass_links}")
 
             # Prepare message body
             post_body = (
@@ -710,6 +783,7 @@ class MatrixToDiscourseBot(Plugin):
                 f"**12ft.io Link:** {bypass_links['12ft']}\n"
                 f"**Archive.org Link:** {bypass_links['archive']}"
             )
+            self.log.debug(f"Post body prepared: {post_body}")
 
             # Create the post on Discourse
             tags = ["posted-link"]
@@ -720,9 +794,12 @@ class MatrixToDiscourseBot(Plugin):
                 category_id=topic_id,
                 tags=tags,
             )
+            self.log.debug(f"Discourse post creation result: URL={post_url}, Error={error}")
 
             if post_url:
                 # Include title in the reply
                 await evt.reply(f"Post created successfully! Title: {title}, URL: {post_url}")
+                self.log.info(f"Successfully created post on Discourse: {post_url}")
             else:
                 await evt.reply(f"Failed to create post: {error}")
+                self.log.error(f"Failed to create post on Discourse: {error}")
