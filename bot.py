@@ -18,31 +18,31 @@ from mautrix.types import (
 from maubot import Plugin, MessageEvent
 from maubot.handlers import command, event
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
-from bs4 import BeautifulSoup
+# from bs4 import BeautifulSoup
 
-# from html.parser import HTMLParser
+from html.parser import HTMLParser
 
 # Define HTMLCleaner to extract text from HTML
-# class HTMLCleaner(HTMLParser):
-#     def __init__(self):
-#         super().__init__()
-#         self.text = []
+class HTMLCleaner(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.text = []
 
-#     def handle_data(self, data):
-#         self.text.append(data)
+    def handle_data(self, data):
+        self.text.append(data)
 
-#     def get_cleaned_text(self):
-#         return ''.join(self.text).strip()
+    def get_cleaned_text(self):
+        return ''.join(self.text).strip()
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Config class to manage configuration
 class Config(BaseProxyConfig):
+    #consider validating types or defaulting missing values to avoid runtime errors.
     def do_update(self, helper: ConfigUpdateHelper) -> None:
         # General configuration
         helper.copy("ai_model_type")  # AI model type: openai, google, local, none
-
         # OpenAI configuration
         helper.copy("openai.api_key")
         helper.copy("openai.api_endpoint")
@@ -83,15 +83,15 @@ class Config(BaseProxyConfig):
         # configure for default title fallback if AI integration fails
         helper.copy("default_title")        
 
-# AIIntegration class
+# AIIntegration class, handles the AI integration
 class AIIntegration:
     def __init__(self, config, log):
         self.config = config
         self.log = log
-
+    # Generate the title based on the AI model type
     async def generate_title(self, message_body: str) -> Optional[str]:
         ai_model_type = self.config["ai_model_type"]
-
+        # Check the AI model type and call the appropriate method
         if ai_model_type == "openai":
             return await self.generate_openai_title(message_body)
         elif ai_model_type == "local":
@@ -101,7 +101,7 @@ class AIIntegration:
         else:
             self.log.error(f"Unknown AI model type: {ai_model_type}")
             return None
-
+    # Summarize the content based on the AI model type
     async def summarize_content(self, content: str) -> Optional[str]:
         ai_model_type = self.config["ai_model_type"]
         if ai_model_type == "openai":
@@ -133,7 +133,7 @@ class AIIntegration:
                 "max_tokens": self.config["openai.max_tokens"],
                 "temperature": self.config["openai.temperature"],
             }
-
+            # Make the request to the OpenAI API
             async with aiohttp.ClientSession() as session:
                 async with session.post(self.config["openai.api_endpoint"], headers=headers, json=data) as response:
                     response_text = await response.text()
@@ -152,7 +152,7 @@ class AIIntegration:
             tb = traceback.format_exc()
             self.log.error(f"Error generating title with OpenAI: {e}\n{tb}")
             return None
-
+    # Summarize the content with the OpenAI API
     async def summarize_with_openai(self, content: str) -> Optional[str]:
         prompt = f"Please provide a concise summary of the following content:\n\n{content}"
         try:
@@ -171,7 +171,7 @@ class AIIntegration:
                 "max_tokens": self.config["openai.max_tokens"],
                 "temperature": self.config["openai.temperature"],
             }
-
+            # Make the request to the OpenAI API
             async with aiohttp.ClientSession() as session:
                 async with session.post(self.config["openai.api_endpoint"], headers=headers, json=data) as response:
                     response_text = await response.text()
@@ -195,17 +195,17 @@ class AIIntegration:
         # Implement according to local LLM API
         self.log.error("Local LLM integration is not implemented yet.")
         return None
-
+    # Summarize the content with the local LLM API
     async def summarize_with_local_llm(self, content: str) -> Optional[str]:
         # Implement according to local LLM API
         self.log.error("Local LLM integration is not implemented yet.")
         return None
-
+    # Generate the title with the Google API
     async def generate_google_title(self, message_body: str) -> Optional[str]:
         # Implement according to Google API
         self.log.error("Google AI integration is not implemented yet.")
         return None
-
+    # Summarize the content with the Google API
     async def summarize_with_google(self, content: str) -> Optional[str]:
         # Implement according to Google API
         self.log.error("Google AI integration is not implemented yet.")
@@ -216,7 +216,7 @@ class DiscourseAPI:
     def __init__(self, config, log):
         self.config = config
         self.log = log
-
+    # Create the post on Discourse
     async def create_post(self, title, raw, category_id, tags=None):
         url = f"{self.config['discourse_base_url']}/posts.json"
         headers = {
@@ -230,7 +230,7 @@ class DiscourseAPI:
             "category": category_id,
             "tags": tags or [],
         }
-
+        # Make the request to the Discourse API for creating the post
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json=payload) as response:
                 response_text = await response.text()
@@ -252,7 +252,7 @@ class DiscourseAPI:
                 else:
                     self.log.error(f"Discourse API error: {response.status} {data}")
                     return None, f"Failed to create post: {response.status}\nResponse: {response_text}"
-
+    # Check for duplicates URL on Discourse
     async def check_for_duplicate(self, url: str) -> bool:
         search_url = f"{self.config['discourse_base_url']}/search.json"
         headers = {
@@ -261,7 +261,7 @@ class DiscourseAPI:
             "Api-Username": self.config["discourse_api_username"],
         }
         params = {"q": url}
-
+        # Make the request to the Discourse API for checking for duplicates
         async with aiohttp.ClientSession() as session:
             async with session.get(search_url, headers=headers, params=params) as response:
                 response_text = await response.text()
@@ -276,7 +276,7 @@ class DiscourseAPI:
                 else:
                     self.log.error(f"Discourse API error: {response.status} {response_json}")
                     return False
-
+    # Search the Discourse for a query
     async def search_discourse(self, query: str):
         search_url = f"{self.config['discourse_base_url']}/search.json"
         headers = {
@@ -305,7 +305,7 @@ class DiscourseAPI:
 def extract_urls(text: str) -> List[str]:
     url_regex = r'(https?://\S+)'
     return re.findall(url_regex, text)
-
+# Generate bypass links based on the URL
 def generate_bypass_links(url: str) -> Dict[str, str]:
     links = {
         "original": url,
@@ -315,6 +315,8 @@ def generate_bypass_links(url: str) -> Dict[str, str]:
     return links
 
 # Function to scrape content from URLs
+#FIXME: Get BeautifulSoup to work and focus on gaining the title and keywords and summary from the html
+#to pass to the AI model for generating the title and summary
 async def scrape_content(url: str) -> Optional[str]:
     try:
         # Use beautifulsoup to parse the html
@@ -329,7 +331,7 @@ async def scrape_content(url: str) -> Optional[str]:
                 # Get the html from the response
                 html = await response.text()
                 # Parse the html
-                soup = BeautifulSoup(html, 'html.parser')
+                soup = HTMLCleaner()
                 # Get the Title and keywords from the html
                 title = soup.title.string if soup.title else None
                 keywords = [meta.get('content') for meta in soup.find_all('meta') if meta.get('name') == 'keywords']    
@@ -359,13 +361,13 @@ class MatrixToDiscourseBot(Plugin):
     @command.new(name="help", require_subcommand=False)
     async def help_command(self, evt: MessageEvent) -> None:
         await self.handle_help(evt)
-
+    # Handle the help event
     async def handle_help(self, evt: MessageEvent) -> None:
         help_trigger = self.config["help_trigger"]
         post_trigger = self.config["post_trigger"]
         search_trigger = self.config["search_trigger"]
         url_post_trigger = self.config["url_post_trigger"]
-
+        # Log the help trigger
         self.log.info(f"Command !{help_trigger} triggered.")
         help_msg = (
             "Welcome to the Community Forum Bot!\n\n"
@@ -465,8 +467,9 @@ class MatrixToDiscourseBot(Plugin):
         search_trigger = self.config["search_trigger"]
         self.log.info(f"Command !{search_trigger} triggered.")
         await evt.reply("Searching the forum...")
-
+        # Try to search the Discourse for the query and display the results
         try:
+            # Make the request to the Discourse API for searching
             search_results = await self.discourse_api.search_discourse(query)
             if search_results is not None:
                 if search_results:
@@ -486,6 +489,7 @@ class MatrixToDiscourseBot(Plugin):
                     top_recent = sorted_by_recent[:2]
                     top_seen = sorted_by_views[:3]
 
+                    # Format the results
                     def format_results(results):
                         return "\n".join(
                             [
@@ -493,14 +497,14 @@ class MatrixToDiscourseBot(Plugin):
                                 for result in results
                             ]
                         )
-
+                    # Format the results message
                     result_msg = (
                         "**Top 2 Most Recent:**\n"
                         + format_results(top_recent)
                         + "\n\n**Top 3 Most Seen:**\n"
                         + format_results(top_seen)
                     )
-
+                    # Send the results message
                     await evt.reply(f"Search results:\n{result_msg}")
                 else:
                     await evt.reply("No results found.")
@@ -525,32 +529,33 @@ class MatrixToDiscourseBot(Plugin):
     @command.new(name="url", require_subcommand=False)
     async def post_url_to_discourse_command(self, evt: MessageEvent) -> None:
         await self.handle_post_url_to_discourse(evt)
-
+    # Handle the post URL to Discourse command
     async def handle_post_url_to_discourse(self, evt: MessageEvent) -> None:
         url_post_trigger = self.config["url_post_trigger"]
         self.log.info(f"Command !{url_post_trigger} triggered.")
-
+        # Check if the message is a reply to another message
         if not evt.content.get_reply_to():
             await evt.reply("You must reply to a message containing a URL to use this command.")
             return
-
+        # Extract the body of the replied-to message
         replied_event = await evt.client.get_event(
             evt.room_id, evt.content.get_reply_to()
         )
         message_body = replied_event.content.body
-
+        # Check if the replied-to message is empty
         if not message_body:
             await evt.reply("The replied-to message is empty.")
             return
-
+        # Extract the URLs from the replied-to message
         urls = extract_urls(message_body)
+        # Check if no URLs were found in the replied-to message
         if not urls:
             await evt.reply("No URLs found in the replied message.")
             return
-
+        # Process the links in the replied-to message
         await self.process_link(evt, message_body)
 
-    # Process links in messages
+    # Process links in messages and send the post to Discourse and reply to the message
     async def process_link(self, evt: MessageEvent, message_body: str) -> None:
         urls = extract_urls(message_body)
         username = evt.sender.split(":")[0]  # Extract the username from the sender
@@ -566,52 +571,53 @@ class MatrixToDiscourseBot(Plugin):
                 await evt.reply(f"A post with this URL already exists: {url}")
                 continue
 
-            # Scrape content
-            content = await scrape_content(url)
-            summary = None
-            if content:
-                # Summarize content if scraping was successful
-                summary = await self.ai_integration.summarize_content(content)
-                if not summary:
-                    self.log.warning(f"Summarization failed for URL: {url}")
-            else:
-                self.log.warning(f"Scraping content failed for URL: {url}")
+            # Idempotency check: Ensure the post is not already being processed
+            if self.is_processing(url):
+                self.log.info(f"URL {url} is already being processed.")
+                continue
+            self.mark_as_processing(url)
 
-            # Generate title
-            title = None
-            if summary:
-                title = await self.generate_title(summary)
-            else:
-                self.log.info(f"Generating title using URL and domain for: {url}")
-                title = await self.generate_title(f"URL: {url}, Domain: {url.split('/')[2]}")
+            try:
+                # Scrape content
+                content = await scrape_content(url)
+                summary = None
+                if content:
+                    summary = await self.ai_integration.summarize_content(content)
+                    if not summary:
+                        self.log.warning(f"Summarization failed for URL: {url}")
+                else:
+                    self.log.warning(f"Scraping content failed for URL: {url}")
 
-            if not title:
-                title = "Untitled Post by " + displayname
+                # Generate title
+                title = await self.generate_title(summary or f"URL: {url}, Domain: {url.split('/')[2]}")
+                if not title:
+                    title = "Untitled Post by " + displayname
 
-            # Generate bypass links
-            bypass_links = generate_bypass_links(url)
+                # Generate bypass links
+                bypass_links = generate_bypass_links(url)
 
-            # Prepare message body
-            post_body = (
-                f"**Posted by:** @{username}\n\n"
-                f"{summary or 'Content could not be scraped or summarized.'}\n\n"
-                f"**Original Link:** {bypass_links['original']}\n"
-                f"**12ft.io Link:** {bypass_links['12ft']}\n"
-                f"**Archive.org Link:** {bypass_links['archive']}"
-            )
+                # Prepare message body
+                post_body = (
+                    f"**Posted by:** @{username}\n\n"
+                    f"{summary or 'Content could not be scraped or summarized.'}\n\n"
+                    f"**Original Link:** {bypass_links['original']}\n"
+                    f"**12ft.io Link:** {bypass_links['12ft']}\n"
+                    f"**Archive.org Link:** {bypass_links['archive']}"
+                )
 
-            # Create the post on Discourse
-            tags = ["posted-link"]
-            topic_id = self.config["unsorted_category_id"]
-            post_url, error = await self.discourse_api.create_post(
-                title=title,
-                raw=post_body,
-                category_id=topic_id,
-                tags=tags,
-            )
+                # Create the post on Discourse
+                tags = ["posted-link"]
+                topic_id = self.config["unsorted_category_id"]
+                post_url, error = await self.discourse_api.create_post(
+                    title=title,
+                    raw=post_body,
+                    category_id=topic_id,
+                    tags=tags,
+                )
 
-            if post_url:
-                # Include title in the reply
-                await evt.reply(f"Post created successfully! Title: {title}, URL: {post_url}")
-            else:
-                await evt.reply(f"Failed to create post: {error}")
+                if post_url:
+                    await evt.reply(f"Post created successfully! Title: {title}, URL: {post_url}")
+                else:
+                    await evt.reply(f"Failed to create post: {error}")
+            finally:
+                self.unmark_as_processing(url)
