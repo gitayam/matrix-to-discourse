@@ -82,6 +82,7 @@ To get your API key, go to https://discourse.example.com/admin/api/keys. Replace
 
 Example base-config.yaml
 
+
 ###### AI Model Configuration ######
 ai_model_type: "openai"  # Choose between "openai", "google", "local", "none"
 
