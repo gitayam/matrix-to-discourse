@@ -13,3 +13,4 @@ dependencies:
   - openai
   - pyyaml
   - requests
+  - beautifulsoup4

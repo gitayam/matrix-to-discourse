@@ -18,20 +18,21 @@ from mautrix.types import (
 from maubot import Plugin, MessageEvent
 from maubot.handlers import command, event
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
+from bs4 import BeautifulSoup
 
-from html.parser import HTMLParser
+# from html.parser import HTMLParser
 
 # Define HTMLCleaner to extract text from HTML
-class HTMLCleaner(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.text = []
+# class HTMLCleaner(HTMLParser):
+#     def __init__(self):
+#         super().__init__()
+#         self.text = []
 
-    def handle_data(self, data):
-        self.text.append(data)
+#     def handle_data(self, data):
+#         self.text.append(data)
 
-    def get_cleaned_text(self):
-        return ''.join(self.text).strip()
+#     def get_cleaned_text(self):
+#         return ''.join(self.text).strip()
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -78,6 +79,9 @@ class Config(BaseProxyConfig):
             self["url_patterns"] = list(helper.base["url_patterns"])
         else:
             self["url_patterns"] = []
+
+        # configure for default title fallback if AI integration fails
+        helper.copy("default_title")        
 
 # AIIntegration class
 class AIIntegration:
@@ -313,15 +317,25 @@ def generate_bypass_links(url: str) -> Dict[str, str]:
 # Function to scrape content from URLs
 async def scrape_content(url: str) -> Optional[str]:
     try:
+        # Use beautifulsoup to parse the html
         async with aiohttp.ClientSession() as session:
+            # Get the response from the url
             async with session.get(url, timeout=10) as response:
+                # Check if the response is ok
                 if response.status != 200:
+                    # Log the error
                     logger.error(f"Failed to retrieve content from {url}: HTTP {response.status}")
                     return None
+                # Get the html from the response
                 html = await response.text()
-                cleaner = HTMLCleaner()
-                cleaner.feed(html)
-                content = cleaner.get_cleaned_text()
+                # Parse the html
+                soup = BeautifulSoup(html, 'html.parser')
+                # Get the Title and keywords from the html
+                title = soup.title.string if soup.title else None
+                keywords = [meta.get('content') for meta in soup.find_all('meta') if meta.get('name') == 'keywords']    
+                # Get the text from the html
+                content = soup.get_text()
+                # Return the content if it exists
                 return content if content else None
     except Exception as e:
         logger.error(f"Error scraping content from {url}: {e}", exc_info=True)
@@ -409,7 +423,7 @@ class MatrixToDiscourseBot(Plugin):
                 if not title:
                     title = await self.generate_title(message_body)
                 if not title:
-                    title = "Default Title"  # Fallback title if generation fails
+                    title = default_title  # Fallback title if generation fails
 
             self.log.info(f"Generated Title: {title}")
 
