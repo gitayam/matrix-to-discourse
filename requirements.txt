@@ -8,4 +8,4 @@ HTMLParser
 pyyaml
 requests
 asyncio
-bs4
+# selenium

@@ -6,17 +6,17 @@ from datetime import datetime
 from typing import Type, Dict, List, Optional, Tuple
 from mautrix.client import Client
 from mautrix.types import Format, TextMessageEventContent, EventType, RelationType
-from maubot import Plugin, MessageEvent
+from maubot import Plugin, MessageEvent, MessageType
 from maubot.handlers import command, event
 import aiohttp
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 #for scraping the title, keywords, summary import selinium or beautifulsoup
 # from bs4 import BeautifulSoup # currently not working as expected
 # scrape with selenium 
-from selenium import webdriver
-from selenium.webdriver.common.by.css_selector import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+# from selenium import webdriver
+# from selenium.webdriver.common.by.css_selector import By
+# from selenium.webdriver.support.ui import WebDriverWait
+# from selenium.webdriver.support import expected_conditions as EC
 
 # Config class to manage configuration
 class Config(BaseProxyConfig):
@@ -301,17 +301,18 @@ class MatrixToDiscourseBot(Plugin):
         await super().start()
         self.config.load_and_update()
         self.log.info("MatrixToDiscourseBot started")
+        
         self.ai_integration = AIIntegration(self.config, self.log)
         self.discourse_api = DiscourseAPI(self.config, self.log)
-    # Function to get the configuration class
+        # Class variable shared across all instances
+        self.processing_urls = set()
+
     @classmethod
     def get_config_class(cls) -> Type[BaseProxyConfig]:
         return Config
-    # Function to handle the help event
+
     @command.new(name="help", require_subcommand=False)
-    async def help(self, evt: MessageEvent) -> None:
-        help_trigger = self.config["help_trigger"]
-        self.log.info(f"Command !{help_trigger} triggered.")
+    async def help_command(self, evt: MessageEvent) -> None:
         help_trigger = self.config["help_trigger"]
         self.log.info(f"Command !{help_trigger} triggered.")
         help_msg = (
@@ -322,9 +323,7 @@ class MatrixToDiscourseBot(Plugin):
         )
         await evt.reply(help_msg)
 
-    # Function to handle the message event
-    # Fixing the post_to_discourse command
-    @command.new(name="post", require_subcommand=False)  # Static placeholder
+    @command.new(name="post", require_subcommand=False)
     @command.argument("title", pass_raw=True, required=False)
     async def post_to_discourse(self, evt: MessageEvent, title: str = None) -> None:
         # Retrieve the actual trigger name dynamically
@@ -357,7 +356,7 @@ class MatrixToDiscourseBot(Plugin):
             else:
                 # Use provided title or generate one using the AI model
                 if not title:
-                    title = await self.generate_title(message_body)
+                    title = await self.ai_integration.generate_title(message_body)
                 if not title:
                     title = "Default Title"  # Fallback title if generation fails
 
@@ -367,11 +366,11 @@ class MatrixToDiscourseBot(Plugin):
             topic_id = self.config["matrix_to_discourse_topic"].get(evt.room_id, self.config["unsorted_category_id"])
 
             # Create the post on Discourse
-            post_url, error = await self.create_post(
-                self.config["discourse_base_url"], 
-                topic_id, 
-                title, 
-                message_body
+            post_url, error = await self.discourse_api.create_post(
+                title=title,
+                raw=message_body,
+                category_id=topic_id,
+                tags=[]
             )
             if post_url:
                 await evt.reply(f"Post created successfully! URL: {post_url} \n\n Log in to the community to engage with this post.")
@@ -382,91 +381,67 @@ class MatrixToDiscourseBot(Plugin):
             self.log.error(f"Error processing !{post_trigger} command: {e}")
             await evt.reply(f"An error occurred: {e}")
 
-    async def create_post(self, base_url, category_id, title, message_body):
-        url = f"{base_url}/posts.json"
-        headers = {
-            "Content-Type": "application/json",
-            "Api-Key": self.config["discourse_api_key"],
-            "Api-Username": self.config["discourse_api_username"]
-        }
-        payload = {
-            "title": title,
-            "raw": message_body,
-            "category": category_id
-        }
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload) as response:
-                response_text = await response.text()
-                if response.status == 200:
-                    data = await response.json()
-                    topic_id = data.get("topic_id")
-                    topic_slug = data.get("topic_slug")
-                    post_url = f"{base_url}/t/{topic_slug}/{topic_id}" if topic_id and topic_slug else "URL not available"
-                    return post_url, None
-                else:
-                    return None, f"Failed to create post: {response.status}\nResponse: {response_text}"
-    # Function to search the discourse
-    @command.new(name=self.config["search_trigger"], require_subcommand=False)
+    @command.new(name="search", require_subcommand=False)
     @command.argument("query", pass_raw=True, required=True)
     async def search_discourse(self, evt: MessageEvent, query: str) -> None:
-        self.log.info("Command !{self.config['search_trigger']} triggered.")
-        await evt.reply("Searching the forum...")
+        search_trigger = self.config["search_trigger"]
+        if evt.content.body.startswith(f"!{search_trigger}"):
+            self.log.info(f"Command !{search_trigger} triggered.")
+            await evt.reply("Searching the forum...")
 
-        try:
-            search_url = f"{self.config['discourse_base_url']}/search.json"
-            headers = {
-                "Content-Type": "application/json",
-                "Api-Key": self.config["discourse_api_key"],
-                "Api-Username": self.config["discourse_api_username"]
-            }
-            params = {"q": query}
+            try:
+                search_url = f"{self.config['discourse_base_url']}/search.json"
+                headers = {
+                    "Content-Type": "application/json",
+                    "Api-Key": self.config["discourse_api_key"],
+                    "Api-Username": self.config["discourse_api_username"]
+                }
+                params = {"q": query}
 
-            async with aiohttp.ClientSession() as session:
-                async with session.get(search_url, headers=headers, params=params) as response:
-                    response_json = await response.json()
-                    if response.status == 200:
-                        search_results = response_json.get("topics", [])
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(search_url, headers=headers, params=params) as response:
+                        response_json = await response.json()
+                        if response.status == 200:
+                            search_results = response_json.get("topics", [])
 
-                        # Safely get keys with default values
-                        for result in search_results:
-                            result['views'] = result.get('views', 0)
-                            result['created_at'] = result.get('created_at', '1970-01-01T00:00:00Z')
+                            # Safely get keys with default values
+                            for result in search_results:
+                                result['views'] = result.get('views', 0)
+                                result['created_at'] = result.get('created_at', '1970-01-01T00:00:00Z')
 
-                        # Sort search results by created_at for most recent and by views for most seen
-                        sorted_by_recent = sorted(search_results, key=lambda x: x['created_at'], reverse=True)
-                        sorted_by_views = sorted(search_results, key=lambda x: x['views'], reverse=True)
+                            # Sort search results by created_at for most recent and by views for most seen
+                            sorted_by_recent = sorted(search_results, key=lambda x: x['created_at'], reverse=True)
+                            sorted_by_views = sorted(search_results, key=lambda x: x['views'], reverse=True)
 
-                        # Select top 2 most recent and top 3 most seen
-                        top_recent = sorted_by_recent[:2]
-                        top_seen = sorted_by_views[:3]
+                            # Select top 2 most recent and top 3 most seen
+                            top_recent = sorted_by_recent[:2]
+                            top_seen = sorted_by_views[:3]
 
-                        def format_results(results):
-                            return "\n".join([f"* [{result['title']}]({self.config['discourse_base_url']}/t/{result['slug']}/{result['id']})" for result in results])
+                            def format_results(results):
+                                return "\n".join([f"* [{result['title']}]({self.config['discourse_base_url']}/t/{result['slug']}/{result['id']})" for result in results])
 
-                        result_msg = (
-                            "**Top 2 Most Recent:**\n" +
-                            format_results(top_recent) +
-                            "\n\n**Top 3 Most Seen:**\n" +
-                            format_results(top_seen)
-                        )
+                            result_msg = (
+                                "**Top 2 Most Recent:**\n" +
+                                format_results(top_recent) +
+                                "\n\n**Top 3 Most Seen:**\n" +
+                                format_results(top_seen)
+                            )
 
-                        if search_results:
-                            await evt.reply(f"Search results:\n{result_msg}")
+                            if search_results:
+                                await evt.reply(f"Search results:\n{result_msg}")
+                            else:
+                                await evt.reply("No results found.")
                         else:
-                            await evt.reply("No results found.")
-                    else:
-                        self.log.error(f"Discourse API error: {response.status} {response_json}")
-                        await evt.reply("Failed to perform search.")
-        except Exception as e:
-            self.log.error(f"Error processing !fsearch command: {e}")
-            await evt.reply(f"An error occurred: {e}")
-    ############################################################################################
-    # URL handling functions
+                            self.log.error(f"Discourse API error: {response.status} {response_json}")
+                            await evt.reply("Failed to perform search.")
+            except Exception as e:
+                self.log.error(f"Error processing !{search_trigger} command: {e}")
+                await evt.reply(f"An error occurred: {e}")
+
     def extract_urls(self, text: str) -> List[str]:
         url_regex = r'(https?://\S+)'
         return re.findall(url_regex, text)
-    # Generate bypass links based on the URL
+
     def generate_bypass_links(self, url: str) -> Dict[str, str]:
         links = {
             "original": url,
@@ -474,11 +449,11 @@ class MatrixToDiscourseBot(Plugin):
             "archive": f"https://web.archive.org/web/{url}",
         }
         return links
+
     async def generate_summary(self, content: str) -> str:
         # Summarize the content using the AI model
-        return await self.ai_integration.summarize_content(content) #should be awaited
+        return await self.ai_integration.summarize_content(content)
 
-    # Handle messages with URLs
     @event.on(EventType.ROOM_MESSAGE)
     async def handle_message(self, evt: MessageEvent) -> None:
         # Ignore messages sent by the bot itself
@@ -487,13 +462,11 @@ class MatrixToDiscourseBot(Plugin):
 
         if evt.content.msgtype != MessageType.TEXT:
             return
-        pass
 
-    # Command to process URLs in replies
     @command.new(name="url", require_subcommand=False)
     async def post_url_to_discourse_command(self, evt: MessageEvent) -> None:
         await self.handle_post_url_to_discourse(evt)
-    # Handle the post URL to Discourse command
+
     async def handle_post_url_to_discourse(self, evt: MessageEvent) -> None:
         url_post_trigger = self.config["url_post_trigger"]
         self.log.info(f"Command !{url_post_trigger} triggered.")
@@ -511,7 +484,7 @@ class MatrixToDiscourseBot(Plugin):
             await evt.reply("The replied-to message is empty.")
             return
         # Extract the URLs from the replied-to message
-        urls = extract_urls(message_body)
+        urls = self.extract_urls(message_body)
         # Check if no URLs were found in the replied-to message
         if not urls:
             await evt.reply("No URLs found in the replied message.")
@@ -519,7 +492,6 @@ class MatrixToDiscourseBot(Plugin):
         # Process the links in the replied-to message
         await self.process_link(evt, message_body)
 
-    # Process links in messages and send the post to Discourse and reply to the message
     async def process_link(self, evt: MessageEvent, message_body: str) -> None:
         urls = self.extract_urls(message_body)
         username = evt.sender.split(":")[0]  # Extract the username from the sender
@@ -543,10 +515,9 @@ class MatrixToDiscourseBot(Plugin):
 
             try:
                 # Scrape content
-                content = await self.scrape_content(url)
+                content = await self.testing_scrape_content(url)
                 summary = None
                 if content:
-                    #generate_summary should be awaited 
                     summary = await self.generate_summary(content)
                     if not summary:
                         self.log.warning(f"Summarization failed for URL: {url}")
@@ -554,7 +525,7 @@ class MatrixToDiscourseBot(Plugin):
                     self.log.warning(f"Scraping content failed for URL: {url}")
 
                 # Generate title
-                title = await self.generate_title(summary or f"URL: {url}, Domain: {url.split('/')[2]}")
+                title = await self.ai_integration.generate_title(summary or f"URL: {url}, Domain: {url.split('/')[2]}")
                 if not title:
                     title = "Untitled Post by " + displayname
 
@@ -587,19 +558,8 @@ class MatrixToDiscourseBot(Plugin):
             finally:
                 self.unmark_as_processing(url)
 
-    async def scrape_content(self, url: str) -> Optional[str]:
-        # scrape with selenium not with bs4
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
-                    page = await response.text() #get the page
-                    driver = webdriver.Chrome()
-                    driver.get(url)
-                    content = driver.find_element(By.TAG_NAME, "body").text
-                    return content
-        except Exception as e:
-            self.log.error(f"Error scraping content from {url}: {e}")
-            return None
+    async def testing_scrape_content(self, url: str) -> str:
+        return url
 
     def is_processing(self, url: str) -> bool:
         return url in self.processing_urls
