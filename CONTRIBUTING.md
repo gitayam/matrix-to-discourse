@@ -34,7 +34,7 @@ git checkout <branch-name>
 1. Create .mbp file in the plugins directory with the following:
 ```bash
 # These are the current files in the repository needed to run the bot.
-zip -9r matrix-to-discourse-testing.mbp bot.py maubot.yaml base-config.yaml requirements.txt
+zip -9r matrix-to-discourse-testing.mbp bot.py maubot.yaml config.yaml requirements.txt
 ```
 1. Initial Testing: `python3 -m maubot` This will tell you if there are any errors in the plugin that need to be fixed.
 1. Upload the matrix-to-discourse-testing.mbp file to the maubot dashboard, plugin section.
