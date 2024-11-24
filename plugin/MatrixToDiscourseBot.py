@@ -19,19 +19,8 @@ from mautrix.types import (
 from maubot import Plugin, MessageEvent
 from maubot.handlers import command, event
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
-
-from html.parser import HTMLParser
-
-class HTMLCleaner(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.text = []
-
-    def handle_data(self, data):
-        self.text.append(data)
-
-    def get_cleaned_text(self):
-        return ''.join(self.text).strip()
+# from selenium import webdriver
+# from selenium.webdriver.chrome.options import Options
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -188,14 +177,23 @@ class AIIntegration:
             return None
 
     async def generate_local_title(self, message_body: str) -> Optional[str]:
-        # Implement according to local LLM API
-        self.log.error("Local LLM integration is not implemented yet.")
-        return None
+        #  local LLM API
+        prompt = f"Create a brief (3-10 word) attention-grabbing title for the following post on the community forum: {message_body}"
+        try:
+            pass # Implement local LLM API
+        except Exception as e:
+            tb = traceback.format_exc()
+            self.log.error(f"Error generating title with local LLM: {e}\n{tb}")
+            return None
 
     async def summarize_with_local_llm(self, content: str) -> Optional[str]:
-        # Implement according to local LLM API
-        self.log.error("Local LLM integration is not implemented yet.")
-        return None
+        prompt = f"Please provide a concise summary of the following content:\n\n{content}"
+        try:
+            pass # Implement local LLM API
+        except Exception as e:
+            tb = traceback.format_exc()
+            self.log.error(f"Error summarizing with local LLM: {e}\n{tb}")
+            return None
 
     async def generate_google_title(self, message_body: str) -> Optional[str]:
         prompt = f"Create a brief (3-10 word) attention-grabbing title for the following post on the community forum: {message_body}"
@@ -379,20 +377,63 @@ def generate_bypass_links(url: str) -> Dict[str, str]:
     return links
 
 async def scrape_content(url: str) -> Optional[str]:
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as response:
-                if response.status != 200:
-                    logger.error(f"Failed to retrieve content from {url}: HTTP {response.status}")
-                    return None
-                html = await response.text()
-                cleaner = HTMLCleaner()
-                cleaner.feed(html)
-                content = cleaner.get_cleaned_text()
-                return content if content else None
-    except Exception as e:
-        logger.error(f"Error scraping content from {url}: {e}", exc_info=True)
-        return None
+    #for testing just output the url
+    return url
+    # Scrape the content of the URL for title, description, and keywords, seo using selenium
+#     chrome_options = Options()
+#     chrome_options.add_argument('--headless')
+#     chrome_options.add_argument('--no-sandbox')
+#     chrome_options.add_argument('--disable-dev-shm-usage')
+
+#     driver = None
+#     try:
+#         driver = webdriver.Chrome(options=chrome_options)
+#         driver.get(url)
+        
+#         # Get title
+#         title = driver.title
+
+#         # Get meta description
+#         description = ""
+#         desc_elem = driver.find_elements("xpath", "//meta[@name='description']")
+#         if desc_elem:
+#             description = desc_elem[0].get_attribute("content")
+
+#         # Get meta keywords
+#         keywords = ""
+#         keywords_elem = driver.find_elements("xpath", "//meta[@name='keywords']")
+#         if keywords_elem:
+#             keywords = keywords_elem[0].get_attribute("content")
+
+#         # Get paragraphs
+#         paragraphs = driver.find_elements("xpath", "//p")
+#         first_paragraph = paragraphs[0].text if paragraphs else ""
+#         last_paragraph = paragraphs[-1].text if paragraphs else ""
+
+#         # Combine content
+#         content = f"""
+# Title: {title}
+
+# Description: {description}
+
+# Keywords: {keywords}
+
+# First Paragraph:
+# {first_paragraph}
+
+# Last Paragraph:
+# {last_paragraph}
+# """
+#         return content.strip()
+
+#     except Exception as e:
+#         logger.error(f"Error scraping content: {str(e)}")
+#         return None
+
+#     finally:
+#         if driver:
+#             driver.quit()
+
 
 # Main plugin class
 class MatrixToDiscourseBot(Plugin):

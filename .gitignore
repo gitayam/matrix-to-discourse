@@ -166,3 +166,4 @@ cython_debug/
 .DS_Store
 *.mbp
 matrix-to-discourse-urls.mbp
+plugin.zip
