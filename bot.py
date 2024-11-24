@@ -2,12 +2,20 @@
 import asyncio
 import json
 import re
+import traceback
+import argparse
 from datetime import datetime
 from typing import Type, Dict, List, Optional, Tuple
 from mautrix.client import Client
 from mautrix.types import Format, TextMessageEventContent, EventType, RelationType
 from maubot import Plugin, MessageEvent 
-from mautrix.types import Message, MessageEventContent, MessageType
+from mautrix.types import (
+    Format,
+    TextMessageEventContent,
+    EventType,
+    RelationType,
+    MessageType,
+)
 from maubot.handlers import command, event
 import aiohttp
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
@@ -455,14 +463,14 @@ class MatrixToDiscourseBot(Plugin):
         # Summarize the content using the AI model
         return await self.ai_integration.summarize_content(content)
 
+    # Handle messages with URLs
     @event.on(EventType.ROOM_MESSAGE)
     async def handle_message(self, evt: MessageEvent) -> None:
-        # Ignore messages sent by the bot itself
         if evt.sender == self.client.mxid:
             return
 
         if evt.content.msgtype != MessageType.TEXT:
-            return
+            return        
 
     @command.new(name="url", require_subcommand=False)
     async def post_url_to_discourse_command(self, evt: MessageEvent) -> None:
