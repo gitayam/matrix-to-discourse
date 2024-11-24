@@ -141,20 +141,25 @@ class MatrixToDiscourseBot(Plugin):
     async def help(self, evt: MessageEvent) -> None:
         help_trigger = self.config["help_trigger"]
         self.log.info(f"Command !{help_trigger} triggered.")
+        help_trigger = self.config["help_trigger"]
+        self.log.info(f"Command !{help_trigger} triggered.")
         help_msg = (
-            "Welcome to the Community Forum Bot!\n\n"
-            "To create a post on the forum, reply to a message with `!fpost`.\n"
-            "To search the forum, use `!fsearch <query>`.\n"
-            "For help, use `!fhelp`."
+            f"Welcome to the Community Forum Bot!\n\n"
+            f"To create a post on the forum, reply to a message with `{self.config['post_trigger']}`.\n"
+            f"To search the forum, use `{self.config['search_trigger']} <query>`.\n"
+            f"For help, use `{help_trigger}`."
         )
         await evt.reply(help_msg)
+
     # Function to handle the message event
-    @command.new(name=self.config["post_trigger"], require_subcommand=False)
-    @command.argument("title", pass_raw=True, required=False)  # Title is optional and taken from AI if not provided
-    # Function to post the message to the discourse
+    # Fixing the post_to_discourse command
+    @command.new(name="post", require_subcommand=False)  # Static placeholder
+    @command.argument("title", pass_raw=True, required=False)
     async def post_to_discourse(self, evt: MessageEvent, title: str = None) -> None:
-        # information for user to trigger by using the post_trigger command, use the variable
-        self.log.info("Command !{self.config['post_trigger']} triggered.")
+        # Retrieve the actual trigger name dynamically
+        post_trigger = self.config["post_trigger"]
+        self.log.info(f"Command !{post_trigger} triggered.")
+        
         await evt.reply("Creating a Forum post, log in to the community forum to view all posts and to engage on the forum...")
 
         try:
@@ -203,7 +208,7 @@ class MatrixToDiscourseBot(Plugin):
                 await evt.reply(f"Failed to create post: {error}")
 
         except Exception as e:
-            self.log.error(f"Error processing !fpost command: {e}")
+            self.log.error(f"Error processing !{post_trigger} command: {e}")
             await evt.reply(f"An error occurred: {e}")
     # Function to generate title using the selected AI model
     async def generate_title(self, message_body: str) -> str:
