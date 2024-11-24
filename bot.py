@@ -70,146 +70,6 @@ class AIIntegration:
         else:
             self.log.error(f"Unknown AI model type: {ai_model_type}")
             return None
-
-    async def summarize_with_openai(self, content: str) -> Optional[str]:
-        # Implement the OpenAI summarization here
-        pass
-
-    async def summarize_with_local_llm(self, content: str) -> Optional[str]:
-        # Implement the local LLM summarization here
-        pass
-
-    async def summarize_with_google(self, content: str) -> Optional[str]:
-        # Implement the Google summarization here
-        pass
-
-# DiscourseAPI class, handles the Discourse API
-class DiscourseAPI:
-    def __init__(self, config, log):
-        self.config = config
-        self.log = log
-        self.base_url = self.config["discourse_base_url"]
-        self.headers = {
-            "Content-Type": "application/json",
-            "Api-Key": self.config["discourse_api_key"],
-            "Api-Username": self.config["discourse_api_username"]
-        }
-
-    async def check_for_duplicate(self, url: str) -> bool:
-        search_url = f"{self.base_url}/search/query"
-        params = {"term": url}
-        async with aiohttp.ClientSession() as session:
-            async with session.get(search_url, headers=self.headers, params=params) as response:
-                response_json = await response.json()
-                posts = response_json.get("posts", [])
-                return len(posts) > 0
-
-    async def create_post(self, title: str, raw: str, category_id: int, tags: List[str]) -> Tuple[Optional[str], Optional[str]]:
-        url = f"{self.base_url}/posts.json"
-        payload = {
-            "title": title,
-            "raw": raw,
-            "category": category_id,
-            "tags": tags
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=self.headers, json=payload) as response:
-                response_text = await response.text()
-                if response.status == 200:
-                    data = await response.json()
-                    topic_id = data.get("topic_id")
-                    topic_slug = data.get("topic_slug")
-                    post_url = f"{self.base_url}/t/{topic_slug}/{topic_id}" if topic_id and topic_slug else "URL not available"
-                    return post_url, None
-                else:
-                    return None, f"Failed to create post: {response.status}\nResponse: {response_text}"
-
-# Main plugin class
-class MatrixToDiscourseBot(Plugin):
-    async def start(self) -> None:
-        await super().start()
-        self.config.load_and_update()
-        self.log.info("MatrixToDiscourseBot started")
-        self.ai_integration = AIIntegration(self.config, self.log)
-        self.discourse_api = DiscourseAPI(self.config, self.log)
-    # Function to get the configuration class
-    @classmethod
-    def get_config_class(cls) -> Type[BaseProxyConfig]:
-        return Config
-    # Function to handle the help event
-    @command.new(name="help", require_subcommand=False)
-    async def help(self, evt: MessageEvent) -> None:
-        help_trigger = self.config["help_trigger"]
-        self.log.info(f"Command !{help_trigger} triggered.")
-        help_trigger = self.config["help_trigger"]
-        self.log.info(f"Command !{help_trigger} triggered.")
-        help_msg = (
-            f"Welcome to the Community Forum Bot!\n\n"
-            f"To create a post on the forum, reply to a message with `{self.config['post_trigger']}`.\n"
-            f"To search the forum, use `{self.config['search_trigger']} <query>`.\n"
-            f"For help, use `{help_trigger}`."
-        )
-        await evt.reply(help_msg)
-
-    # Function to handle the message event
-    # Fixing the post_to_discourse command
-    @command.new(name="post", require_subcommand=False)  # Static placeholder
-    @command.argument("title", pass_raw=True, required=False)
-    async def post_to_discourse(self, evt: MessageEvent, title: str = None) -> None:
-        # Retrieve the actual trigger name dynamically
-        post_trigger = self.config["post_trigger"]
-        self.log.info(f"Command !{post_trigger} triggered.")
-        
-        await evt.reply("Creating a Forum post, log in to the community forum to view all posts and to engage on the forum...")
-
-        try:
-            self.log.info(f"Received event body: {evt.content.body}")
-
-            # Check if the message is a reply to another message
-            if not evt.content.get_reply_to():
-                await evt.reply("You must reply to a message to use this command.")
-                return
-
-            # Extract the body of the replied-to message
-            replied_event = await evt.client.get_event(evt.room_id, evt.content.get_reply_to())
-            message_body = replied_event.content.body
-            self.log.info(f"Message body: {message_body}")
-
-            # Determine if a title is required
-            ai_model_type = self.config["ai_model_type"]
-
-            if ai_model_type == "none":
-                # If AI is set to 'none', title is required from the user
-                if not title:
-                    await evt.reply("A title is required since AI model is set to 'none'. Please provide a title.")
-                    return
-            else:
-                # Use provided title or generate one using the AI model
-                if not title:
-                    title = await self.generate_title(message_body)
-                if not title:
-                    title = "Default Title"  # Fallback title if generation fails
-
-            self.log.info(f"Generated Title: {title}")
-
-            # Get the topic ID based on the room ID
-            topic_id = self.config["matrix_to_discourse_topic"].get(evt.room_id, self.config["unsorted_category_id"])
-
-            # Create the post on Discourse
-            post_url, error = await self.create_post(
-                self.config["discourse_base_url"], 
-                topic_id, 
-                title, 
-                message_body
-            )
-            if post_url:
-                await evt.reply(f"Post created successfully! URL: {post_url} \n\n Log in to the community to engage with this post.")
-            else:
-                await evt.reply(f"Failed to create post: {error}")
-
-        except Exception as e:
-            self.log.error(f"Error processing !{post_trigger} command: {e}")
-            await evt.reply(f"An error occurred: {e}")
     # Function to generate title using the selected AI model
     async def generate_title(self, message_body: str) -> str:
         ai_model_type = self.config["ai_model_type"]
@@ -221,6 +81,8 @@ class MatrixToDiscourseBot(Plugin):
         elif ai_model_type == "google":
             return await self.generate_google_title(message_body)
         return None  # If none is selected, this should never be called
+
+
     # Function to generate title using OpenAI
     async def generate_openai_title(self, message_body: str) -> str:
         prompt = f"Create a brief (3-10 word) attention grabbing title for the following post on the community forum: {message_body}"
@@ -385,18 +247,135 @@ class MatrixToDiscourseBot(Plugin):
         except Exception as e:
             self.log.error(f"Error summarizing with Google Gemini: {e}")
             return None
-    # summarize_content
-    async def summarize_content(self, content: str) -> Optional[str]:
-        ai_model_type = self.config["ai_model_type"]
-        if ai_model_type == "openai":
-            return await self.summarize_with_openai(content)
-        elif ai_model_type == "local":
-            return await self.summarize_with_local_llm(content)
-        elif ai_model_type == "google":
-            return await self.summarize_with_google(content)
-        else:
-            self.log.error(f"Unknown AI model type: {ai_model_type}")
-            return None
+
+
+# DiscourseAPI class, handles the Discourse API
+class DiscourseAPI:
+    def __init__(self, config, log):
+        self.config = config
+        self.log = log
+        self.base_url = self.config["discourse_base_url"]
+        self.headers = {
+            "Content-Type": "application/json",
+            "Api-Key": self.config["discourse_api_key"],
+            "Api-Username": self.config["discourse_api_username"]
+        }
+
+    async def check_for_duplicate(self, url: str) -> bool:
+        search_url = f"{self.base_url}/search/query"
+        params = {"term": url}
+        async with aiohttp.ClientSession() as session:
+            async with session.get(search_url, headers=self.headers, params=params) as response:
+                response_json = await response.json()
+                posts = response_json.get("posts", [])
+                return len(posts) > 0
+
+    async def create_post(self, title: str, raw: str, category_id: int, tags: List[str]) -> Tuple[Optional[str], Optional[str]]:
+        url = f"{self.base_url}/posts.json"
+        payload = {
+            "title": title,
+            "raw": raw,
+            "category": category_id,
+            "tags": tags
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self.headers, json=payload) as response:
+                response_text = await response.text()
+                if response.status == 200:
+                    data = await response.json()
+                    topic_id = data.get("topic_id")
+                    topic_slug = data.get("topic_slug")
+                    post_url = f"{self.base_url}/t/{topic_slug}/{topic_id}" if topic_id and topic_slug else "URL not available"
+                    return post_url, None
+                else:
+                    return None, f"Failed to create post: {response.status}\nResponse: {response_text}"
+
+# Main plugin class
+class MatrixToDiscourseBot(Plugin):
+    async def start(self) -> None:
+        await super().start()
+        self.config.load_and_update()
+        self.log.info("MatrixToDiscourseBot started")
+        self.ai_integration = AIIntegration(self.config, self.log)
+        self.discourse_api = DiscourseAPI(self.config, self.log)
+    # Function to get the configuration class
+    @classmethod
+    def get_config_class(cls) -> Type[BaseProxyConfig]:
+        return Config
+    # Function to handle the help event
+    @command.new(name="help", require_subcommand=False)
+    async def help(self, evt: MessageEvent) -> None:
+        help_trigger = self.config["help_trigger"]
+        self.log.info(f"Command !{help_trigger} triggered.")
+        help_trigger = self.config["help_trigger"]
+        self.log.info(f"Command !{help_trigger} triggered.")
+        help_msg = (
+            f"Welcome to the Community Forum Bot!\n\n"
+            f"To create a post on the forum, reply to a message with `{self.config['post_trigger']}`.\n"
+            f"To search the forum, use `{self.config['search_trigger']} <query>`.\n"
+            f"For help, use `{help_trigger}`."
+        )
+        await evt.reply(help_msg)
+
+    # Function to handle the message event
+    # Fixing the post_to_discourse command
+    @command.new(name="post", require_subcommand=False)  # Static placeholder
+    @command.argument("title", pass_raw=True, required=False)
+    async def post_to_discourse(self, evt: MessageEvent, title: str = None) -> None:
+        # Retrieve the actual trigger name dynamically
+        post_trigger = self.config["post_trigger"]
+        self.log.info(f"Command !{post_trigger} triggered.")
+        
+        await evt.reply("Creating a Forum post, log in to the community forum to view all posts and to engage on the forum...")
+
+        try:
+            self.log.info(f"Received event body: {evt.content.body}")
+
+            # Check if the message is a reply to another message
+            if not evt.content.get_reply_to():
+                await evt.reply("You must reply to a message to use this command.")
+                return
+
+            # Extract the body of the replied-to message
+            replied_event = await evt.client.get_event(evt.room_id, evt.content.get_reply_to())
+            message_body = replied_event.content.body
+            self.log.info(f"Message body: {message_body}")
+
+            # Determine if a title is required
+            ai_model_type = self.config["ai_model_type"]
+
+            if ai_model_type == "none":
+                # If AI is set to 'none', title is required from the user
+                if not title:
+                    await evt.reply("A title is required since AI model is set to 'none'. Please provide a title.")
+                    return
+            else:
+                # Use provided title or generate one using the AI model
+                if not title:
+                    title = await self.generate_title(message_body)
+                if not title:
+                    title = "Default Title"  # Fallback title if generation fails
+
+            self.log.info(f"Generated Title: {title}")
+
+            # Get the topic ID based on the room ID
+            topic_id = self.config["matrix_to_discourse_topic"].get(evt.room_id, self.config["unsorted_category_id"])
+
+            # Create the post on Discourse
+            post_url, error = await self.create_post(
+                self.config["discourse_base_url"], 
+                topic_id, 
+                title, 
+                message_body
+            )
+            if post_url:
+                await evt.reply(f"Post created successfully! URL: {post_url} \n\n Log in to the community to engage with this post.")
+            else:
+                await evt.reply(f"Failed to create post: {error}")
+
+        except Exception as e:
+            self.log.error(f"Error processing !{post_trigger} command: {e}")
+            await evt.reply(f"An error occurred: {e}")
 
     async def create_post(self, base_url, category_id, title, message_body):
         url = f"{base_url}/posts.json"
@@ -490,25 +469,9 @@ class MatrixToDiscourseBot(Plugin):
             "archive": f"https://web.archive.org/web/{url}",
         }
         return links
-    def generate_summary(self, content: str) -> str:
-        summary = await self.ai_integration.summarize_content(content)
-        return summary
-    
-    ##TODO: Add the content scraping function
-    soup = BeautifulSoup(page,"html.parser") #parse the page
-    item = soup.find_all('p') #find all the paragraphs in the page
-    article = ""
-    for i in item:
-        article += i.text #append the text in the paragraphs to the article
-    return article
-    # {"role": "system", "content": "You are a journalist."},
-    # {"role": "assistant", "content": "write a 20 word summary of this article"},
-    # {"role": "user", "content": article}
-    # Summarize the content using the AI model 4o-mini
-    async def summarize_content(self, content: str) -> str:
-        prompt = f"write a 20 word summary of this article: {content}"
-        summary = await self.generate_summary(prompt)
-        return summary
+    async def generate_summary(self, content: str) -> str:
+        # Summarize the content using the AI model
+        return await self.ai_integration.summarize_content(content) #should be awaited
 
     # Handle messages with URLs
     @event.on(EventType.ROOM_MESSAGE)
@@ -578,6 +541,7 @@ class MatrixToDiscourseBot(Plugin):
                 content = await self.scrape_content(url)
                 summary = None
                 if content:
+                    #generate_summary should be awaited 
                     summary = await self.generate_summary(content)
                     if not summary:
                         self.log.warning(f"Summarization failed for URL: {url}")
@@ -639,4 +603,3 @@ class MatrixToDiscourseBot(Plugin):
 
     def unmark_as_processing(self, url: str) -> None:
         self.processing_urls.discard(url)
-
