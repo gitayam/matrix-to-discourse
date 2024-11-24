@@ -6,7 +6,8 @@ from datetime import datetime
 from typing import Type, Dict, List, Optional, Tuple
 from mautrix.client import Client
 from mautrix.types import Format, TextMessageEventContent, EventType, RelationType
-from maubot import Plugin, MessageEvent, MessageType
+from maubot import Plugin, MessageEvent 
+from mautrix.types import Message, MessageEventContent, MessageType
 from maubot.handlers import command, event
 import aiohttp
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
