@@ -15,6 +15,7 @@ from mautrix.types import (
     EventType,
     RelationType,
     MessageType,
+    PaginationDirection,
 )
 from maubot import Plugin, MessageEvent
 from maubot.handlers import command, event
@@ -476,7 +477,7 @@ class MatrixToDiscourseBot(Plugin):
     async def handle_post_to_discourse(self, evt: MessageEvent, args: str = None) -> None:
         post_trigger = self.config["post_trigger"]
         self.log.info(f"Command !{post_trigger} triggered.")
-
+        # Parse the arguments for the command
         parser = argparse.ArgumentParser(prog=f"!{post_trigger}", add_help=False)
         parser.add_argument("-n", "--number", type=int, help="Number of messages to summarize")
         parser.add_argument("-h", "--hours", type=int, help="Number of hours to look back")
@@ -564,6 +565,9 @@ class MatrixToDiscourseBot(Plugin):
             evt.room_id, self.config["unsorted_category_id"]
         )
 
+        # Log the category ID being used
+        self.log.info(f"Using category ID: {topic_id}")
+
         # Create the post on Discourse
         tags = []  # Modify tags as needed
         post_url, error = await self.discourse_api.create_post(
@@ -582,38 +586,112 @@ class MatrixToDiscourseBot(Plugin):
     # Fetch messages by number
     async def fetch_messages_by_number(self, evt: MessageEvent, number: int) -> List[MessageEvent]:
         messages = []
-        prev_batch = evt.event_id
+        prev_batch = None  # Initialize with None or a valid sync token
+        self.log.info(f"Using prev_batch token: {prev_batch}")
+
+        # Perform an initial sync to get the latest sync token
+        try:
+            sync_response = await self.client.sync(since=prev_batch)
+            prev_batch = sync_response['next_batch']
+        except Exception as e:
+            self.log.error(f"Error during sync: {e}")
+            return messages
+
         while len(messages) < number:
-            response = await self.client.get_room_messages(evt.room_id, prev_batch, direction='b', limit=100)
-            chunk = response.chunk
-            if not chunk:
+            try:
+                response = await self.client.get_messages(
+                    room_id=evt.room_id,
+                    from_token=prev_batch,
+                    direction=PaginationDirection.BACKWARD,
+                    limit=100
+                )
+            except Exception as e:
+                self.log.error(f"Error fetching messages: {e}")
+                break
+
+            # Log the entire response for debugging
+            self.log.debug(f"Response: {response}")
+
+            # Inspect the response to find the correct attribute
+            events = response.events  # Adjust this line based on the actual attribute name
+            if not events:
                 break  # No more messages
-            for event in chunk:
+            for event in events:
                 if event.type == EventType.ROOM_MESSAGE and event.sender != self.client.mxid:
                     messages.append(event)
                     if len(messages) >= number:
                         break
-            prev_batch = response.end
+
+            # Handle missing 'end' token
+            if hasattr(response, 'end'):
+                prev_batch = response.end
+            else:
+                self.log.warning("No 'end' token in response, stopping pagination.")
+                break
+
         return messages[:number]
 
     # Fetch messages by timeframe
     async def fetch_messages_by_time(self, evt: MessageEvent, time_delta: timedelta) -> List[MessageEvent]:
         messages = []
-        prev_batch = evt.event_id
+        prev_batch = None  # Initialize with None or a valid sync token
         end_time = datetime.utcnow() - time_delta
+        max_retries = 3
+        retry_delay = 5  # seconds
+
+        # Perform an initial sync to get the latest sync token
+        try:
+            sync_response = await self.client.sync(since=prev_batch)
+            prev_batch = sync_response['next_batch']
+        except Exception as e:
+            self.log.error(f"Error during sync: {e}")
+            return messages
 
         while True:
-            response = await self.client.get_room_messages(evt.room_id, prev_batch, direction='b', limit=100)
-            chunk = response.chunk
-            if not chunk:
+            for attempt in range(max_retries):
+                try:
+                    # Use the correct method to fetch messages
+                    response = await self.client.get_messages(
+                        room_id=evt.room_id,
+                        from_token=prev_batch,
+                        direction=PaginationDirection.BACKWARD,
+                        limit=100
+                    )
+                    break  # Exit retry loop if successful
+                except Exception as e:
+                    self.log.error(f"Error fetching messages: {e}")
+                    if "504" in str(e):
+                        self.log.warning(f"504 Gateway Timeout encountered. Retrying in {retry_delay} seconds...")
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        return messages  # Exit if it's not a 504 error
+
+            else:
+                self.log.error("Max retries reached. Exiting message fetch.")
+                return messages
+
+            # Log the entire response for debugging
+            self.log.debug(f"Response: {response}")
+
+            # Use the correct attribute to access the messages
+            events = response.events  # Adjust this line based on the actual attribute name
+            if not events:
                 break  # No more messages
-            for event in chunk:
+
+            for event in events:
                 if event.type == EventType.ROOM_MESSAGE and event.sender != self.client.mxid:
                     event_time = datetime.utcfromtimestamp(event.server_timestamp / 1000)
                     if event_time < end_time:
                         return messages
                     messages.append(event)
-            prev_batch = response.end
+
+            # Handle missing 'end' token
+            if hasattr(response, 'end'):
+                prev_batch = response.end
+            else:
+                self.log.warning("No 'end' token in response, stopping pagination.")
+                break
+
         return messages
 
     # Function to generate title
