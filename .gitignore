@@ -166,3 +166,6 @@ cython_debug/
 .DS_Store
 *.mbp
 matrix-to-discourse-urls.mbp
+maubot.db
+maubot.db-shm
+maubot.db-wal
