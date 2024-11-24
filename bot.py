@@ -11,7 +11,12 @@ from maubot.handlers import command, event
 import aiohttp
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 #for scraping the title, keywords, summary import selinium or beautifulsoup
-from bs4 import BeautifulSoup
+# from bs4 import BeautifulSoup # currently not working as expected
+# scrape with selenium 
+from selenium import webdriver
+from selenium.webdriver.common.by.css_selector import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 # Config class to manage configuration
 class Config(BaseProxyConfig):
@@ -583,14 +588,15 @@ class MatrixToDiscourseBot(Plugin):
                 self.unmark_as_processing(url)
 
     async def scrape_content(self, url: str) -> Optional[str]:
+        # scrape with selenium not with bs4
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as response:
-                    page = await response.text()
-            soup = BeautifulSoup(page, "html.parser")
-            paragraphs = soup.find_all('p')
-            content = "\n".join(p.get_text() for p in paragraphs)
-            return content
+                    page = await response.text() #get the page
+                    driver = webdriver.Chrome()
+                    driver.get(url)
+                    content = driver.find_element(By.TAG_NAME, "body").text
+                    return content
         except Exception as e:
             self.log.error(f"Error scraping content from {url}: {e}")
             return None
