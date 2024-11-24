@@ -8,3 +8,4 @@ HTMLParser
 pyyaml
 requests
 asyncio
+bs4
