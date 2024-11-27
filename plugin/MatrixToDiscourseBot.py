@@ -244,7 +244,7 @@ class AIIntegration:
             return None
     # Implement the methods for each AI model
     async def generate_openai_title(self, message_body: str) -> Optional[str]:
-        prompt = f"Create a brief (3-10 word) attention-grabbing title for the {self.target_audience} for the following post on the community forum: {message_body}"
+        prompt = f"Create a brief (3-10 word) attention-grabbing title for the {self.target_audience} for the following post on the community forum but don't use the target audience description and if the target audience is not specified just use the message body: {message_body}"
         try:
             api_key = self.config.get('openai.api_key', None)
             if not api_key:
