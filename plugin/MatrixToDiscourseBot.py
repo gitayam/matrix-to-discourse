@@ -115,6 +115,9 @@ class AIIntegration:
 
     async def generate_tag(self, content: str) -> Optional[str]:
         try:
+            if not self.discourse_api:
+                self.log.error("Discourse API is not initialized.")
+                return None
             # Get existing tags from Discourse for context
             top_tags = await self.discourse_api.get_top_tags()
             tag_names = [tag["name"] for tag in top_tags.get("tags", [])]
@@ -124,40 +127,45 @@ class AIIntegration:
             prompt = self.TAG_PROMPT.format(tag_list=tag_list, content=content)
 
             if self.config["ai_model_type"] == "openai":
-                api_key = self.config.get('openai.api_key', None)
-                if not api_key:
-                    self.log.error("OpenAI API key is not configured.")
+                try:
+                    api_key = self.config.get('openai.api_key', None)
+                    if not api_key:
+                        self.log.error("OpenAI API key is not configured.")
+                        return None
+
+                    headers = {
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {api_key}"
+                    }
+
+                    data = {
+                        "model": self.config["openai.model"],
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": self.config["openai.max_tokens"],
+                        "temperature": self.config["openai.temperature"],
+                    }
+
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(self.config["openai.api_endpoint"], headers=headers, json=data) as response:
+                            response_text = await response.text()
+                            try:
+                                response_json = json.loads(response_text)
+                            except json.JSONDecodeError as e:
+                                self.log.error(f"Error decoding OpenAI response: {e}\nResponse text: {response_text}")
+                                return None
+
+                            if response.status == 200:
+                                tags_text = response_json["choices"][0]["message"]["content"].strip()
+                                tags = [tag.strip().lower().replace(' ', '-') for tag in tags_text.split(',')]
+                                tags = [tag for tag in tags if tag][:5]
+                                return tags
+                            else:
+                                self.log.error(f"OpenAI API error: {response.status} {response_json}")
+                                return None
+                except Exception as e:
+                    tb = traceback.format_exc()
+                    self.log.error(f"Error generating tags with OpenAI: {e}\n{tb}")
                     return None
-
-                headers = {
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}"
-                }
-                
-                data = {
-                    "model": self.config["openai.model"],
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": self.config["openai.max_tokens"],
-                    "temperature": self.config["openai.temperature"],
-                }
-
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(self.config["openai.api_endpoint"], headers=headers, json=data) as response:
-                        response_text = await response.text()
-                        try:
-                            response_json = json.loads(response_text)
-                        except json.JSONDecodeError as e:
-                            self.log.error(f"Error decoding OpenAI response: {e}\nResponse text: {response_text}")
-                            return None
-
-                        if response.status == 200:
-                            tags_text = response_json["choices"][0]["message"]["content"].strip()
-                            tags = [tag.strip().lower().replace(' ', '-') for tag in tags_text.split(',')]
-                            tags = [tag for tag in tags if tag][:5]
-                            return tags
-                        else:
-                            self.log.error(f"OpenAI API error: {response.status} {response_json}")
-                            return None
 
             elif self.config["ai_model_type"] == "local":
                 headers = {
@@ -274,7 +282,7 @@ class AIIntegration:
             return None
 
     async def summarize_with_openai(self, content: str) -> Optional[str]:
-        prompt = f"Please provide a concise summary which is relevant to the {self.target_audience} of the following content:\n\n{content}"
+        prompt = f"Please provide a concise summary which is relevant to the target audience {self.target_audience} of the following content please don't any of the target audience description in the summary:\n\n{content}"
         try:
             api_key = self.config.get('openai.api_key', None)
             if not api_key:
@@ -497,6 +505,39 @@ class DiscourseAPI:
                 else:
                     self.log.error(f"Discourse API error: {response.status} {response_json}")
                     return None
+    # get_top_tags 
+    async def get_top_tags(self):
+        """Fetch top tags from Discourse API.
+        
+        Returns:
+            dict: JSON response containing tags information, or None if the request fails
+        """
+        url = f"{self.config['discourse_base_url']}/tags.json"
+        headers = {
+            "Content-Type": "application/json",
+            "Api-Key": self.config["discourse_api_key"],
+            "Api-Username": self.config["discourse_api_username"],
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers) as response:
+                    response_text = await response.text()
+                    try:
+                        response_json = json.loads(response_text)
+                    except json.JSONDecodeError as e:
+                        self.log.error(f"Error decoding Discourse response: {e}\nResponse text: {response_text}")
+                        return None
+
+                    if response.status == 200:
+                        return response_json
+                    else:
+                        self.log.error(f"Discourse API error: {response.status} {response_json}")
+                        return None
+
+        except Exception as e:
+            self.log.error(f"Error fetching top tags: {e}")
+            return None
 
 # URL handling functions
 def extract_urls(text: str) -> List[str]:
@@ -729,7 +770,7 @@ class MatrixToDiscourseBot(Plugin):
         )
         if post_url:
             await evt.reply(
-                f"Post created successfully! Title: {title}, URL: {post_url} \n\n Log in to the community to engage with this post."
+                f"Bypass links created and saved for future reference: {title}, URL: {post_url} \n\n Log in to the community to engage with this post."
             )
         else:
             await evt.reply(f"Failed to create post: {error}")
@@ -996,6 +1037,6 @@ class MatrixToDiscourseBot(Plugin):
 
             if post_url:
                 # Include title in the reply
-                await evt.reply(f"Post created successfully! Title: {title}, URL: {post_url}")
+                await evt.reply(f"Bypass links created and saved for future reference: {title}, URL: {post_url}")
             else:
                 await evt.reply(f"Failed to create post: {error}")
