@@ -127,10 +127,20 @@ class AIIntegration:
             if not self.discourse_api:
                 self.log.error("Discourse API is not initialized.")
                 return None
+
             # Get existing tags from Discourse for context
             all_tags = await self.discourse_api.get_all_tags()
             if all_tags is None:
                 self.log.error("Failed to fetch tags from Discourse API.")
+                return ["posted-link"]  # Fallback to a default tag
+
+            # Log the type and content of all_tags for debugging
+            self.log.debug(f"Type of all_tags: {type(all_tags)}")
+            self.log.debug(f"Content of all_tags: {all_tags}")
+
+            # Check if all_tags is a list and contains dictionaries
+            if not isinstance(all_tags, list) or not all(isinstance(tag, dict) for tag in all_tags):
+                self.log.error("Unexpected format for all_tags. Expected a list of dictionaries.")
                 return ["posted-link"]  # Fallback to a default tag
 
             tag_names = [tag["name"] for tag in all_tags]
@@ -254,7 +264,7 @@ class AIIntegration:
         except Exception as e:
             tb = traceback.format_exc()
             self.log.error(f"Error generating tags: {e}\n{tb}")
-            return ["default-tag"]  # Fallback to a default tag
+            return ["fix-me"]  # Fallback to a default tag
 
     generate_title_prompt = "Create a brief (3-10 word) attention-grabbing title for the {target_audience} for the following post on the community forum: {message_body}"
     generate_links_title_prompt = "Create a brief (3-10 word) attention-grabbing title for the following post on the community forum include the source and title of the linked content: {message_body}"
@@ -628,11 +638,19 @@ class DiscourseAPI:
                     if response.status == 200:
                         # Log the entire JSON response for debugging
                         self.log.debug(f"Response JSON: {response_json}")
-                        # Assuming the response contains a 'tags' key with a list of tags
-                        tags = response_json.get("tags", [])
-                        # Extract all tag names
-                        all_tags = [tag["name"] for tag in tags]
-                        return all_tags
+                        # Check if the response contains a 'tags' key with a list of tags
+                        if isinstance(response_json, dict) and "tags" in response_json:
+                            tags = response_json["tags"]
+                            if isinstance(tags, list):
+                                # Extract all tag names
+                                all_tags = [tag for tag in tags if isinstance(tag, dict) and "name" in tag]
+                                return all_tags
+                            else:
+                                self.log.error("Unexpected format for 'tags' in response. Expected a list.")
+                                return None
+                        else:
+                            self.log.error("Unexpected response structure. 'tags' key not found.")
+                            return None
                     else:
                         self.log.error(f"Discourse API error: {response.status} {response_json}")
                         return None
@@ -1184,6 +1202,9 @@ class MatrixToDiscourseBot(Plugin):
 
             if post_url:
                 # Include title in the reply
-                await evt.reply(f"Bypass links created and saved for future reference: {title}, URL: {post_url}")
+                # https://forum.irregularchat.com/tag/posted-link added to the end of the post
+                # not markdown to avoid breaking the post if bridged to signal 
+                # title and link to post
+                await evt.reply(f"Forum post created with bypass links: {title}, {post_url} - See all community posted links https://forum.irregularchat.com/tag/posted-link")
             else:
                 await evt.reply(f"Failed to create post: {error}")
