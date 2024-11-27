@@ -4,7 +4,7 @@ search_trigger: "fsearch"
 post_trigger: "fpost"
 help_trigger: "fhelp"
 url_post_trigger: "furl"
-
+target_audience: "community members in a community forum"
 ###### Discourse Configuration ######
 # To get your API key, go to https://discourse.example.com/admin/api/keys
 # replace "discourse.example.com" with your Discourse URL

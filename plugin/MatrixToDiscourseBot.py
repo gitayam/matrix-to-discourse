@@ -62,7 +62,7 @@ class Config(BaseProxyConfig):
         helper.copy("post_trigger")
         helper.copy("help_trigger")
         helper.copy("url_post_trigger")
-
+        helper.copy("target_audience")
         # Handle URL patterns explicitly as a list
         if "url_patterns" in helper.base:
             self["url_patterns"] = list(helper.base["url_patterns"])
@@ -244,7 +244,7 @@ class AIIntegration:
             return None
     # Implement the methods for each AI model
     async def generate_openai_title(self, message_body: str) -> Optional[str]:
-        prompt = f"Create a brief (3-10 word) attention-grabbing title for the following post on the community forum: {message_body}"
+        prompt = f"Create a brief (3-10 word) attention-grabbing title for the {self.target_audience} for the following post on the community forum: {message_body}"
         try:
             api_key = self.config.get('openai.api_key', None)
             if not api_key:
