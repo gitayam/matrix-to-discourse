@@ -74,6 +74,7 @@ class AIIntegration:
     def __init__(self, config, log):
         self.config = config
         self.log = log
+        self.target_audience = config["target_audience"]
 
     async def generate_title(self, message_body: str) -> Optional[str]:
         ai_model_type = self.config["ai_model_type"]
