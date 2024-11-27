@@ -165,4 +165,6 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 .DS_Store
-plugin/test.irregularchat.matrix_to_discourse-v0.1.0.5.4.12.mbp
+*.mbp
+matrix-to-discourse-urls.mbp
+plugin.zip
