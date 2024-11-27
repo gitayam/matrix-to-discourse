@@ -112,13 +112,10 @@ class AIIntegration:
             self.log.error(f"Unknown AI model type: {ai_model_type}")
             return None
     #generate_openai_tags
-    TAG_PROMPT = """Analyze the following content and suggest 2-5 relevant tags. 
-        Choose from or be inspired by these existing tags: {tag_list}
-        If none of the existing tags fit well, suggest new appropriate tags.
-        The tags should be lowercase, use hyphens instead of spaces, and be concise.
-
-        Content to analyze:
-        {user_message}
+    TAG_PROMPT = """Analyze the following content and suggest 2-5 relevant tags {user_message}.  
+        NOW Choose from or be inspired by these existing tags: {tag_list}
+        If none of the existing tags fit well, suggest new related tags.
+        The tags should be lowercase, use hyphens instead of spaces, and be concise.       
 
         Return only the tags as a comma-separated list, no explanation needed."""
     # user_message is the message body of the post used for context for tag generation
@@ -1174,11 +1171,12 @@ class MatrixToDiscourseBot(Plugin):
 
             # Prepare message body
             post_body = (
-                f"**Original Link:** {bypass_links['original']}\n\n"
-                f"**12ft.io Link:** {bypass_links['12ft']}\n"
-                f"**Archive.org Link:** {bypass_links['archive']}\n\n"
-                f"**Posted by:** @{username}\n\n"
                 f"{summary or 'Content could not be scraped or summarized.'}\n\n"
+                # original link should be full url
+                f"**Original Link:** {url}\n\n"
+                # bypass links should be markdown links with title of archive services and title of the link
+                f"**12ft.io Link:** [{bypass_links['12ft']}]({bypass_links['12ft']})\n"
+                f"**Archive.org Link:** [{bypass_links['archive']}]({bypass_links['archive']})\n\n"
                 f"User Message: {message_body}\n\n"
                 f"for more on see the [post on bypassing methods](https://forum.irregularchat.com/t/bypass-links-and-methods/98?u=sac) "
             )
@@ -1207,6 +1205,6 @@ class MatrixToDiscourseBot(Plugin):
                 # not markdown to avoid breaking the post if bridged to signal 
                 # title and link to post
                 posted_link_url = f"{self.config['discourse_base_url']}/tag/posted-link"
-                await evt.reply(f"Forum post created with bypass links: {title}, {post_url} - See all community posted links {posted_link_url}")
+                await evt.reply(f"🔗Forum post created with bypass links: {title}, {post_url} ")
             else:
                 await evt.reply(f"Failed to create post: {error}")
