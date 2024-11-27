@@ -82,40 +82,34 @@ class AIIntegration:
         # Initialize Discourse API self 
         self.discourse_api = DiscourseAPI(self.config, self.log)
 
-    async def generate_title(self, message_body: str) -> Optional[str]:
+    async def generate_title(self, message_body: str, use_links_prompt: bool = False) -> Optional[str]:
         ai_model_type = self.config["ai_model_type"]
 
         if ai_model_type == "openai":
-            return await self.generate_openai_title(message_body)
+            return await self.generate_openai_title(message_body, use_links_prompt)
         elif ai_model_type == "local":
-            return await self.generate_local_title(message_body)
+            return await self.generate_local_title(message_body, use_links_prompt)
         elif ai_model_type == "google":
-            return await self.generate_google_title(message_body)
+            return await self.generate_google_title(message_body, use_links_prompt)
         else:
             self.log.error(f"Unknown AI model type: {ai_model_type}")
             return None
     #generate_links_title
     async def generate_links_title(self, message_body: str) -> Optional[str]:
-        #    # function to generate a title will pass either generate_title_prompt or generate_links_title_prompt based on the use_links_prompt flag
-        ai_model_type = self.config["ai_model_type"]
-        if ai_model_type == "openai":
-            return await self.generate_openai_title(message_body, use_links_prompt=True)
-        elif ai_model_type == "local":
-            return await self.generate_local_title(message_body, use_links_prompt=True)
-        elif ai_model_type == "google":
-            return await self.generate_google_title(message_body, use_links_prompt=True)
-        else:
-            self.log.error(f"Unknown AI model type: {ai_model_type}")
-            return None
-    #generate_tags
+        # use generate_links_title_prompt for this
+        prompt = self.generate_links_title_prompt.format(message_body=message_body)
+        return await self.generate_title(prompt, use_links_prompt=True)
+
     async def summarize_content(self, content: str) -> Optional[str]:
+        # use generate_title_prompt for this
+        prompt = self.generate_title_prompt.format(target_audience=self.target_audience, message_body=content)
         ai_model_type = self.config["ai_model_type"]
         if ai_model_type == "openai":
-            return await self.summarize_with_openai(content)
+            return await self.summarize_with_openai(prompt)
         elif ai_model_type == "local":
-            return await self.summarize_with_local_llm(content)
+            return await self.summarize_with_local_llm(prompt)
         elif ai_model_type == "google":
-            return await self.summarize_with_google(content)
+            return await self.summarize_with_google(prompt)
         else:
             self.log.error(f"Unknown AI model type: {ai_model_type}")
             return None
@@ -661,8 +655,7 @@ async def scrape_content(url: str) -> Optional[str]:
 # {first_paragraph}
 
 # Last Paragraph:
-# {last_paragraph}
-# """
+# {last_paragraph}# """
 #         return content.strip()
 
 #     except Exception as e:
@@ -959,11 +952,11 @@ class MatrixToDiscourseBot(Plugin):
         return messages
     # Function to generate title for bypassed links
     async def generate_title_for_bypassed_links(self, message_body: str) -> Optional[str]:
-        return await self.ai_integration.generate_links_title(message_body)
+        return await self.ai_integration.generate_links_title(message_body, use_links_prompt=True)
     
     # Function to generate title
     async def generate_title(self, message_body: str) -> Optional[str]:
-        return await self.ai_integration.generate_title(message_body)
+        return await self.ai_integration.generate_title(message_body, use_links_prompt=False)
 
     # Command to search the discourse
     @command.new(name=lambda self: self.config["search_trigger"], require_subcommand=False)
@@ -1066,6 +1059,17 @@ class MatrixToDiscourseBot(Plugin):
     async def process_link(self, evt: MessageEvent, message_body: str) -> None:
         urls = extract_urls(message_body)
         username = evt.sender.split(":")[0]  # Extract the username from the sender
+
+        # Generate a summary and title using the entire message body
+        summary = await self.ai_integration.summarize_content(message_body)
+        if not summary:
+            self.log.warning("Summarization failed for the message body.")
+            summary = "Content could not be scraped or summarized."
+
+        title = await self.ai_integration.generate_links_title(summary)
+        if not title:
+            title = "Bypassed Link with Pending Title"
+
         for url in urls:
             # Check for duplicates
             duplicate_exists = await self.discourse_api.check_for_duplicate(url)
@@ -1087,10 +1091,10 @@ class MatrixToDiscourseBot(Plugin):
             # Generate title
             title = None
             if summary:
-                title = await self.generate_title_for_bypassed_links(summary)
+                title = await self.ai_integration.generate_links_title(summary)
             else:
                 self.log.info(f"Generating title using URL and domain for: {url}")
-                title = await self.generate_title_for_bypassed_links(f"URL: {url}, Domain: {url.split('/')[2]}")
+                title = await self.ai_integration.generate_links_title(f"URL: {url}, Domain: {url.split('/')[2]}")
 
             if not title:
                 title = "Untitled Post"
@@ -1100,11 +1104,11 @@ class MatrixToDiscourseBot(Plugin):
 
             # Prepare message body
             post_body = (
-                f"**Posted by:** @{username}\n\n"
-                f"{summary or 'Content could not be scraped or summarized.'}\n\n"
                 f"**Original Link:** {bypass_links['original']}\n\n"
                 f"**12ft.io Link:** {bypass_links['12ft']}\n"
                 f"**Archive.org Link:** {bypass_links['archive']}\n\n"
+                f"**Posted by:** @{username}\n\n"
+                f"{summary or 'Content could not be scraped or summarized.'}\n\n"
                 f"for more on see the [post on bypassing methods](https://forum.irregularchat.com/t/bypass-links-and-methods/98?u=sac) "
             )
 
