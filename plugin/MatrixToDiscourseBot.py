@@ -87,7 +87,18 @@ class AIIntegration:
         else:
             self.log.error(f"Unknown AI model type: {ai_model_type}")
             return None
-
+    #generate_tags
+    async def generate_tags(self, content: str) -> Optional[str]:
+        ai_model_type = self.config["ai_model_type"]
+        if ai_model_type == "openai":
+            return await self.generate_openai_tags(content)
+        elif ai_model_type == "local":
+            return await self.generate_local_tags(content)
+        elif ai_model_type == "google":
+            return await self.generate_google_tags(content)
+        else:
+            self.log.error(f"Unknown AI model type: {ai_model_type}")
+            return None
     async def summarize_content(self, content: str) -> Optional[str]:
         ai_model_type = self.config["ai_model_type"]
         if ai_model_type == "openai":
@@ -99,7 +110,138 @@ class AIIntegration:
         else:
             self.log.error(f"Unknown AI model type: {ai_model_type}")
             return None
+    #generate_openai_tags
+    TAG_PROMPT = """Analyze the following content and suggest 2-5 relevant tags. 
+        Choose from or be inspired by these existing tags: {tag_list}
+        If none of the existing tags fit well, suggest new appropriate tags.
+        The tags should be lowercase, use hyphens instead of spaces, and be concise.
 
+        Content to analyze:
+        {content}
+
+        Return only the tags as a comma-separated list, no explanation needed."""
+
+    async def generate_tag(self, content: str) -> Optional[str]:
+        try:
+            # Get existing tags from Discourse for context
+            top_tags = await self.discourse_api.get_top_tags()
+            tag_names = [tag["name"] for tag in top_tags.get("tags", [])]
+            tag_list = ", ".join(tag_names[:20])  # Limit to top 20 tags for context
+
+            # Create prompt with existing tags context
+            prompt = self.TAG_PROMPT.format(tag_list=tag_list, content=content)
+
+            if self.config["ai_model_type"] == "openai":
+                api_key = self.config.get('openai.api_key', None)
+                if not api_key:
+                    self.log.error("OpenAI API key is not configured.")
+                    return None
+
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}"
+                }
+                
+                data = {
+                    "model": self.config["openai.model"],
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": self.config["openai.max_tokens"],
+                    "temperature": self.config["openai.temperature"],
+                }
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(self.config["openai.api_endpoint"], headers=headers, json=data) as response:
+                        response_text = await response.text()
+                        try:
+                            response_json = json.loads(response_text)
+                        except json.JSONDecodeError as e:
+                            self.log.error(f"Error decoding OpenAI response: {e}\nResponse text: {response_text}")
+                            return None
+
+                        if response.status == 200:
+                            tags_text = response_json["choices"][0]["message"]["content"].strip()
+                            tags = [tag.strip().lower().replace(' ', '-') for tag in tags_text.split(',')]
+                            tags = [tag for tag in tags if tag][:5]
+                            return tags
+                        else:
+                            self.log.error(f"OpenAI API error: {response.status} {response_json}")
+                            return None
+
+            elif self.config["ai_model_type"] == "local":
+                headers = {
+                    "Content-Type": "application/json"
+                }
+                
+                data = {
+                    "prompt": prompt,
+                    "max_tokens": self.config.get("local_llm.max_tokens", 100),
+                    "temperature": self.config.get("local_llm.temperature", 0.7),
+                }
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(self.config["local_llm.api_endpoint"], headers=headers, json=data) as response:
+                        response_text = await response.text()
+                        try:
+                            response_json = json.loads(response_text)
+                        except json.JSONDecodeError as e:
+                            self.log.error(f"Error decoding Local LLM response: {e}\nResponse text: {response_text}")
+                            return None
+
+                        if response.status == 200:
+                            tags_text = response_json.get("text", "").strip()
+                            tags = [tag.strip().lower().replace(' ', '-') for tag in tags_text.split(',')]
+                            tags = [tag for tag in tags if tag][:5]
+                            return tags
+                        else:
+                            self.log.error(f"Local LLM API error: {response.status} {response_json}")
+                            return None
+
+            elif self.config["ai_model_type"] == "google":
+                api_key = self.config.get('google.api_key', None)
+                if not api_key:
+                    self.log.error("Google API key is not configured.")
+                    return None
+
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}"
+                }
+                
+                data = {
+                    "model": self.config["google.model"],
+                    "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                    "generationConfig": {
+                        "maxOutputTokens": self.config["google.max_tokens"],
+                        "temperature": self.config["google.temperature"],
+                    }
+                }
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(self.config["google.api_endpoint"], headers=headers, json=data) as response:
+                        response_text = await response.text()
+                        try:
+                            response_json = json.loads(response_text)
+                        except json.JSONDecodeError as e:
+                            self.log.error(f"Error decoding Google API response: {e}\nResponse text: {response_text}")
+                            return None
+
+                        if response.status == 200:
+                            tags_text = response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+                            tags = [tag.strip().lower().replace(' ', '-') for tag in tags_text.split(',')]
+                            tags = [tag for tag in tags if tag][:5]
+                            return tags
+                        else:
+                            self.log.error(f"Google API error: {response.status} {response_json}")
+                            return None
+
+            else:
+                self.log.error(f"Unknown AI model type: {self.config['ai_model_type']}")
+                return None
+
+        except Exception as e:
+            tb = traceback.format_exc()
+            self.log.error(f"Error generating tags: {e}\n{tb}")
+            return None
     # Implement the methods for each AI model
     async def generate_openai_title(self, message_body: str) -> Optional[str]:
         prompt = f"Create a brief (3-10 word) attention-grabbing title for the following post on the community forum: {message_body}"
@@ -279,6 +421,19 @@ class DiscourseAPI:
     def __init__(self, config, log):
         self.config = config
         self.log = log
+    #Get top tags used with discourse api
+    async def get_top_tags(self):
+        #Get top tags used with discourse api using discourse_api_key and discourse_api_username and discourse_base_url
+        url = f"{self.config['discourse_base_url']}/tags.json"
+        headers = {
+            "Content-Type": "application/json",
+            "Api-Key": self.config["discourse_api_key"],
+            "Api-Username": self.config["discourse_api_username"],
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                response_text = await response.text()
+                return json.loads(response_text)
 
     async def create_post(self, title, raw, category_id, tags=None):
         url = f"{self.config['discourse_base_url']}/posts.json"
@@ -449,7 +604,6 @@ class MatrixToDiscourseBot(Plugin):
     @classmethod
     def get_config_class(cls) -> Type[BaseProxyConfig]:
         return Config
-
     # Command to handle the help event
     @command.new(name=lambda self: self.config["help_trigger"], require_subcommand=False)
     async def help_command(self, evt: MessageEvent) -> None:
@@ -509,7 +663,7 @@ class MatrixToDiscourseBot(Plugin):
 
         # Fetch messages
         messages = []
-        if number:
+        if number: # Fetch messages by number meaning the number of messages to summarize
             messages = await self.fetch_messages_by_number(evt, number)
             if len(messages) < number:
                 await evt.reply(f"Only found {len(messages)} messages to summarize.")
@@ -531,12 +685,18 @@ class MatrixToDiscourseBot(Plugin):
             await evt.reply("No messages found to summarize.")
             return
 
-        # Combine message bodies
+        # Combine message bodies, including the replied-to message
         message_bodies = [event.content.body for event in reversed(messages) if hasattr(event.content, 'body')]
         combined_message = "\n\n".join(message_bodies)
 
-        # Generate summary using AI model
-        summary = await self.ai_integration.summarize_content(combined_message)
+        # Generate summary using AI model for multiple messages leave individuals out of summary command
+        if number:
+            if len(messages) > 1:   
+                summary = await self.ai_integration.summarize_content(combined_message)
+            else:
+                summary = combined_message
+        else:
+            summary = await self.ai_integration.summarize_content(combined_message)
         if not summary:
             self.log.warning("Failed to generate summary.")
             summary = combined_message  # Fallback to combined message
@@ -560,6 +720,11 @@ class MatrixToDiscourseBot(Plugin):
 
         self.log.info(f"Generated Title: {title}")
 
+        # Generate tags using AI model
+        tags = await self.ai_integration.generate_tags(summary)
+        if not tags:
+            tags = ["bot-post"]  # Fallback tags if generation fails
+
         # Get the topic ID based on the room ID
         topic_id = self.config["matrix_to_discourse_topic"].get(
             evt.room_id, self.config["unsorted_category_id"]
@@ -569,7 +734,6 @@ class MatrixToDiscourseBot(Plugin):
         self.log.info(f"Using category ID: {topic_id}")
 
         # Create the post on Discourse
-        tags = []  # Modify tags as needed
         post_url, error = await self.discourse_api.create_post(
             title=title,
             raw=summary,
@@ -599,7 +763,7 @@ class MatrixToDiscourseBot(Plugin):
 
         while len(messages) < number:
             try:
-                response = await self.client.get_messages(
+                response = await self.client.get_context(
                     room_id=evt.room_id,
                     from_token=prev_batch,
                     direction=PaginationDirection.BACKWARD,
@@ -651,7 +815,7 @@ class MatrixToDiscourseBot(Plugin):
             for attempt in range(max_retries):
                 try:
                     # Use the correct method to fetch messages
-                    response = await self.client.get_messages(
+                    response = await self.client.get_context(
                         room_id=evt.room_id,
                         from_token=prev_batch,
                         direction=PaginationDirection.BACKWARD,
