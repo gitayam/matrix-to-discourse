@@ -954,7 +954,7 @@ class MatrixToDiscourseBot(Plugin):
             self.log.error(f"Error processing !{self.config['search_trigger']} command: {e}")
             await evt.reply(f"An error occurred: {e}")
 
-    # Handle messages with URLs
+    # Handle messages with URLs and process them
     @event.on(EventType.ROOM_MESSAGE)
     async def handle_message(self, evt: MessageEvent) -> None:
         if evt.sender == self.client.mxid:
@@ -962,6 +962,13 @@ class MatrixToDiscourseBot(Plugin):
 
         if evt.content.msgtype != MessageType.TEXT:
             return
+
+        # Extract URLs from the message body
+        message_body = evt.content.body
+        urls = extract_urls(message_body)
+        if urls:
+            await self.process_link(evt, message_body)
+
     # Command to process URLs in replies
     @command.new(name=lambda self: self.config["url_post_trigger"], require_subcommand=False)
     async def post_url_to_discourse_command(self, evt: MessageEvent) -> None:
