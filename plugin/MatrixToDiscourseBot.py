@@ -51,18 +51,18 @@ class Config(BaseProxyConfig):
         helper.copy("google.temperature")
 
         # Discourse configuration
-        helper.copy("discourse_api_key")
-        helper.copy("discourse_api_username")
-        helper.copy("discourse_base_url")
-        helper.copy("unsorted_category_id")
-        helper.copy("matrix_to_discourse_topic")
+        helper.copy("discourse_api_key") # api key for discourse
+        helper.copy("discourse_api_username") # username for discourse
+        helper.copy("discourse_base_url") # base url for discourse
+        helper.copy("unsorted_category_id") # id of the category to use if the room is not in the matrix_to_discourse_topic dictionary
+        helper.copy("matrix_to_discourse_topic") # dictionary of room_id: topic_id
 
         # Command triggers
-        helper.copy("search_trigger")
-        helper.copy("post_trigger")
-        helper.copy("help_trigger")
-        helper.copy("url_post_trigger")
-        helper.copy("target_audience")
+        helper.copy("search_trigger") # trigger for the search command
+        helper.copy("post_trigger") # trigger for the post command
+        helper.copy("help_trigger") # trigger for the help command
+        helper.copy("url_post_trigger") # trigger for the url post command
+        helper.copy("target_audience") # target audience context for ai generation
         # Handle URL patterns explicitly as a list
         if "url_patterns" in helper.base:
             self["url_patterns"] = list(helper.base["url_patterns"])
@@ -71,6 +71,10 @@ class Config(BaseProxyConfig):
 
 # AIIntegration class
 class AIIntegration:
+    """
+    A class to handle AI integration for the plugin.
+    Includes methods for generating titles, summaries, and tags.
+    """
     def __init__(self, config, log):
         self.config = config
         self.log = log
@@ -818,9 +822,11 @@ class MatrixToDiscourseBot(Plugin):
             tags = ["bot-post"]  # Fallback tags if generation fails
 
         # Get the topic ID based on the room ID
-        topic_id = self.config["matrix_to_discourse_topic"].get(
-            evt.room_id, self.config["unsorted_category_id"]
-        )
+        #function to get the topic ID based on the room ID based on the config
+        if self.config["matrix_to_discourse_topic"]:
+            topic_id = self.config["matrix_to_discourse_topic"].get(evt.room_id)
+        else:
+            topic_id = self.config["unsorted_category_id"]
 
         # Log the category ID being used
         self.log.info(f"Using category ID: {topic_id}")
@@ -1100,18 +1106,18 @@ class MatrixToDiscourseBot(Plugin):
                 f"for more on see the [post on bypassing methods](https://forum.irregularchat.com/t/bypass-links-and-methods/98?u=sac) "
             )
 
-            # Determine the topic ID based on the room ID
-            topic_id = self.config["matrix_to_discourse_topic"].get(
-                # if the room is not in the matrix_to_discourse_topic, use the unsorted_category_id
-                evt.room_id, self.config["unsorted_category_id"]
-            )
+            # Attempt to use the identified category room
+            topic_id = self.config["matrix_to_discourse_topic"].get(evt.room_id)
+            
+            # Fallback to unsorted category ID if no specific category is found
+            if not topic_id:
+                topic_id = self.config["unsorted_category_id"]
 
             # Log the category ID being used
             self.log.info(f"Using category ID: {topic_id}")
 
             # Create the post on Discourse
             tags = ["posted-link"]
-            topic_id = self.config["unsorted_category_id"]
             post_url, error = await self.discourse_api.create_post(
                 title=title,
                 raw=post_body,
