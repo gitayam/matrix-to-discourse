@@ -1,6 +1,6 @@
 
 # Matrix to Discourse Bot 
-[v1.1](https://github.com/gitayam/matrix-to-discourse/releases/tag/v1.1)
+[Latest v1.2](https://github.com/gitayam/matrix-to-discourse/releases/tag/v1.2)
 
 A Maubot plugin that allows users to post messages from a Matrix room to a Discourse forum and search the forum. This version includes support for multiple AI API options, such as OpenAI, Google Gemini, local LLM models, and the ability to disable AI altogether.
 
