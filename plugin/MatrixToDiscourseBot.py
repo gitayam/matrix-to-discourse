@@ -824,18 +824,18 @@ class MatrixToDiscourseBot(Plugin):
         # Get the topic ID based on the room ID
         #function to get the topic ID based on the room ID based on the config
         if self.config["matrix_to_discourse_topic"]:
-            topic_id = self.config["matrix_to_discourse_topic"].get(evt.room_id)
+            category_id = self.config["matrix_to_discourse_topic"].get(evt.room_id)
         else:
-            topic_id = self.config["unsorted_category_id"]
+            category_id = self.config["unsorted_category_id"]
 
         # Log the category ID being used
-        self.log.info(f"Using category ID: {topic_id}")
+        self.log.info(f"Using category ID: {category_id}")
 
         # Create the post on Discourse
         post_url, error = await self.discourse_api.create_post(
             title=title,
             raw=summary,
-            category_id=topic_id,
+            category_id=category_id,
             tags=tags,
         )
         if post_url:
