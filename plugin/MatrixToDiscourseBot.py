@@ -96,13 +96,14 @@ class AIIntegration:
             return None
     #generate_links_title
     async def generate_links_title(self, message_body: str) -> Optional[str]:
+        #    # function to generate a title will pass either generate_title_prompt or generate_links_title_prompt based on the use_links_prompt flag
         ai_model_type = self.config["ai_model_type"]
         if ai_model_type == "openai":
-            return await self.generate_openai_links_title(message_body)
+            return await self.generate_openai_title(message_body, use_links_prompt=True)
         elif ai_model_type == "local":
-            return await self.generate_local_links_title(message_body)
+            return await self.generate_local_title(message_body, use_links_prompt=True)
         elif ai_model_type == "google":
-            return await self.generate_google_links_title(message_body)
+            return await self.generate_google_title(message_body, use_links_prompt=True)
         else:
             self.log.error(f"Unknown AI model type: {ai_model_type}")
             return None
@@ -260,6 +261,7 @@ class AIIntegration:
             return None
     generate_title_prompt = "Create a brief (3-10 word) attention-grabbing title for the {target_audience} for the following post on the community forum: {message_body}"
     generate_links_title_prompt = "Create a brief (3-10 word) attention-grabbing title for the following post on the community forum include the source and title of the linked content: {message_body}"
+    # function to generate a title will pass either generate_title_prompt or generate_links_title_prompt based on the use_links_prompt flag
     # Implement the methods for each AI model
     # when called generate_title_prompt or generate_links_title_prompt will be used
     async def generate_openai_title(self, message_body: str, use_links_prompt: bool = False) -> Optional[str]:
@@ -1085,10 +1087,10 @@ class MatrixToDiscourseBot(Plugin):
             # Generate title
             title = None
             if summary:
-                title = await self.generate_title(summary)
+                title = await self.generate_title_for_bypassed_links(summary)
             else:
                 self.log.info(f"Generating title using URL and domain for: {url}")
-                title = await self.generate_title(f"URL: {url}, Domain: {url.split('/')[2]}")
+                title = await self.generate_title_for_bypassed_links(f"URL: {url}, Domain: {url.split('/')[2]}")
 
             if not title:
                 title = "Untitled Post"
@@ -1107,21 +1109,21 @@ class MatrixToDiscourseBot(Plugin):
             )
 
             # Attempt to use the identified category room
-            topic_id = self.config["matrix_to_discourse_topic"].get(evt.room_id)
+            category_id = self.config["matrix_to_discourse_topic"].get(evt.room_id)
             
             # Fallback to unsorted category ID if no specific category is found
-            if not topic_id:
-                topic_id = self.config["unsorted_category_id"]
+            if not category_id:
+                category_id = self.config["unsorted_category_id"]
 
             # Log the category ID being used
-            self.log.info(f"Using category ID: {topic_id}")
+            self.log.info(f"Using category ID: {category_id}")
 
             # Create the post on Discourse
             tags = ["posted-link"]
             post_url, error = await self.discourse_api.create_post(
                 title=title,
                 raw=post_body,
-                category_id=topic_id,
+                category_id=category_id,
                 tags=tags,
             )
 
