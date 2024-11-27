@@ -118,22 +118,26 @@ class AIIntegration:
         The tags should be lowercase, use hyphens instead of spaces, and be concise.
 
         Content to analyze:
-        {content}
+        {user_message}
 
         Return only the tags as a comma-separated list, no explanation needed."""
-
-    async def generate_tag(self, content: str) -> Optional[str]:
+    # user_message is the message body of the post used for context for tag generation
+    async def generate_tags(self, user_message: str = "") -> Optional[List[str]]:
         try:
             if not self.discourse_api:
                 self.log.error("Discourse API is not initialized.")
                 return None
             # Get existing tags from Discourse for context
-            top_tags = await self.discourse_api.get_top_tags()
-            tag_names = [tag["name"] for tag in top_tags.get("tags", [])]
-            tag_list = ", ".join(tag_names[:20])  # Limit to top 20 tags for context
+            all_tags = await self.discourse_api.get_all_tags()
+            if all_tags is None:
+                self.log.error("Failed to fetch tags from Discourse API.")
+                return ["posted-link"]  # Fallback to a default tag
 
-            # Create prompt with existing tags context
-            prompt = self.TAG_PROMPT.format(tag_list=tag_list, content=content)
+            tag_names = [tag["name"] for tag in all_tags]
+            tag_list = ", ".join(list(dict.fromkeys(tag_names)))
+
+            # Create prompt with existing tags context accepts tag list and content , pass user message for context
+            prompt = self.TAG_PROMPT.format(tag_list=tag_list, user_message=user_message)
 
             if self.config["ai_model_type"] == "openai":
                 try:
@@ -250,7 +254,8 @@ class AIIntegration:
         except Exception as e:
             tb = traceback.format_exc()
             self.log.error(f"Error generating tags: {e}\n{tb}")
-            return None
+            return ["default-tag"]  # Fallback to a default tag
+
     generate_title_prompt = "Create a brief (3-10 word) attention-grabbing title for the {target_audience} for the following post on the community forum: {message_body}"
     generate_links_title_prompt = "Create a brief (3-10 word) attention-grabbing title for the following post on the community forum include the source and title of the linked content: {message_body}"
     # function to generate a title will pass either generate_title_prompt or generate_links_title_prompt based on the use_links_prompt flag
@@ -566,7 +571,9 @@ class DiscourseAPI:
         Returns:
             dict: JSON response containing tags information, or None if the request fails
         """
-        url = f"{self.config['discourse_base_url']}/tags.json"
+        #var with number of tags to get
+        num_tags = 10
+        url = f"{self.config['discourse_base_url']}/tags.json" # get tags from discourse api
         headers = {
             "Content-Type": "application/json",
             "Api-Key": self.config["discourse_api_key"],
@@ -584,13 +591,53 @@ class DiscourseAPI:
                         return None
 
                     if response.status == 200:
-                        return response_json
+                        # return top num_tags tags
+                        return response_json[:num_tags]
                     else:
                         self.log.error(f"Discourse API error: {response.status} {response_json}")
                         return None
         # Log the error if there is one
         except Exception as e:
             self.log.error(f"Error fetching top tags: {e}")
+            return None
+
+    async def get_all_tags(self):
+        """Fetch all tags from Discourse API.
+        
+        Returns:
+            list: A list of all tag names, or None if the request fails
+        """
+        url = f"{self.config['discourse_base_url']}/tags.json"
+        headers = {
+            "Content-Type": "application/json",
+            "Api-Key": self.config["discourse_api_key"],
+            "Api-Username": self.config["discourse_api_username"],
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers) as response:
+                    response_text = await response.text()
+                    self.log.debug(f"Response text: {response_text}")  # Log the raw response text
+                    try:
+                        response_json = json.loads(response_text)
+                    except json.JSONDecodeError as e:
+                        self.log.error(f"Error decoding Discourse response: {e}\nResponse text: {response_text}")
+                        return None
+
+                    if response.status == 200:
+                        # Log the entire JSON response for debugging
+                        self.log.debug(f"Response JSON: {response_json}")
+                        # Assuming the response contains a 'tags' key with a list of tags
+                        tags = response_json.get("tags", [])
+                        # Extract all tag names
+                        all_tags = [tag["name"] for tag in tags]
+                        return all_tags
+                    else:
+                        self.log.error(f"Discourse API error: {response.status} {response_json}")
+                        return None
+        except Exception as e:
+            self.log.error(f"Error fetching tags: {e}")
             return None
 
 # URL handling functions
@@ -603,7 +650,6 @@ def generate_bypass_links(url: str) -> Dict[str, str]:
         "original": url,
         "12ft": f"https://12ft.io/{url}",
         "archive": f"https://web.archive.org/web/{url}",
-        "tinyurl": f"https://tinyurl.com/{url}",
     }
     return links
 
@@ -810,7 +856,7 @@ class MatrixToDiscourseBot(Plugin):
         self.log.info(f"Generated Title: {title}")
 
         # Generate tags using AI model
-        tags = await self.ai_integration.generate_tag(summary)
+        tags = await self.ai_integration.generate_tags(summary)
         if not tags:
             tags = ["bot-post"]  # Fallback tags if generation fails
 
@@ -1097,7 +1143,7 @@ class MatrixToDiscourseBot(Plugin):
                 title = "Untitled Post"
 
             # Generate tags
-            tags = await self.ai_integration.generate_tag(content)
+            tags = await self.ai_integration.generate_tags(content)
             # add posted-link to tags if it's not already in the list
             if "posted-link" not in tags:
                 tags.append("posted-link")
