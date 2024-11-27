@@ -576,6 +576,7 @@ class MatrixToDiscourseBot(Plugin):
         self.log.info("MatrixToDiscourseBot started")
         self.ai_integration = AIIntegration(self.config, self.log)
         self.discourse_api = DiscourseAPI(self.config, self.log)
+        self.target_audience = self.config["target_audience"]
 
     # Function to get the configuration class
     @classmethod
