@@ -96,13 +96,11 @@ class AIIntegration:
             return None
     #generate_links_title
     async def generate_links_title(self, message_body: str) -> Optional[str]:
-        # use generate_links_title_prompt for this
-        prompt = self.generate_links_title_prompt.format(message_body=message_body)
+        prompt = f"Create a concise and relevant title for the following content, focusing on the key message and linked content:\n\n{message_body}"
         return await self.generate_title(prompt, use_links_prompt=True)
 
-    async def summarize_content(self, content: str) -> Optional[str]:
-        # use generate_title_prompt for this
-        prompt = self.generate_title_prompt.format(target_audience=self.target_audience, message_body=content)
+    async def summarize_content(self, content: str, user_message: str = "") -> Optional[str]:
+        prompt = f"""Summarize the following content, including any user-provided context or quotes. If there isn't enough information, please just say 'Not Enough Information to Summarize':\n\nContent:\n{content}\n\nUser Message:\n{user_message}"""
         ai_model_type = self.config["ai_model_type"]
         if ai_model_type == "openai":
             return await self.summarize_with_openai(prompt)
@@ -1060,13 +1058,14 @@ class MatrixToDiscourseBot(Plugin):
         urls = extract_urls(message_body)
         username = evt.sender.split(":")[0]  # Extract the username from the sender
 
-        # Generate a summary and title using the entire message body
-        summary = await self.ai_integration.summarize_content(message_body)
+        # Generate a summary using the entire message body
+        summary = await self.ai_integration.summarize_content(message_body, user_message=message_body)
         if not summary:
             self.log.warning("Summarization failed for the message body.")
             summary = "Content could not be scraped or summarized."
 
-        title = await self.ai_integration.generate_links_title(summary)
+        # Generate a title using the message body
+        title = await self.ai_integration.generate_links_title(message_body)
         if not title:
             title = "Bypassed Link with Pending Title"
 
@@ -1079,25 +1078,31 @@ class MatrixToDiscourseBot(Plugin):
 
             # Scrape content
             content = await scrape_content(url)
-            summary = None
             if content:
                 # Summarize content if scraping was successful
-                summary = await self.ai_integration.summarize_content(content)
+                summary = await self.ai_integration.summarize_content(content, user_message=message_body)
                 if not summary:
                     self.log.warning(f"Summarization failed for URL: {url}")
             else:
                 self.log.warning(f"Scraping content failed for URL: {url}")
 
             # Generate title
-            title = None
             if summary:
-                title = await self.ai_integration.generate_links_title(summary)
+                title = await self.ai_integration.generate_links_title(message_body)
             else:
                 self.log.info(f"Generating title using URL and domain for: {url}")
                 title = await self.ai_integration.generate_links_title(f"URL: {url}, Domain: {url.split('/')[2]}")
 
             if not title:
                 title = "Untitled Post"
+
+            # Generate tags
+            tags = await self.ai_integration.generate_tag(content)
+            # add posted-link to tags if it's not already in the list
+            if "posted-link" not in tags:
+                tags.append("posted-link")
+            if not tags:
+                tags = ["posted-link"]  # Fallback tags if generation fails
 
             # Generate bypass links
             bypass_links = generate_bypass_links(url)
@@ -1109,6 +1114,7 @@ class MatrixToDiscourseBot(Plugin):
                 f"**Archive.org Link:** {bypass_links['archive']}\n\n"
                 f"**Posted by:** @{username}\n\n"
                 f"{summary or 'Content could not be scraped or summarized.'}\n\n"
+                f"User Message: {message_body}\n\n"
                 f"for more on see the [post on bypassing methods](https://forum.irregularchat.com/t/bypass-links-and-methods/98?u=sac) "
             )
 
@@ -1123,7 +1129,6 @@ class MatrixToDiscourseBot(Plugin):
             self.log.info(f"Using category ID: {category_id}")
 
             # Create the post on Discourse
-            tags = ["posted-link"]
             post_url, error = await self.discourse_api.create_post(
                 title=title,
                 raw=post_body,
