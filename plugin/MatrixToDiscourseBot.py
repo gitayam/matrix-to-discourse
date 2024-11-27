@@ -75,6 +75,8 @@ class AIIntegration:
         self.config = config
         self.log = log
         self.target_audience = config["target_audience"]
+        # Initialize Discourse API self 
+        self.discourse_api = DiscourseAPI(self.config, self.log)
 
     async def generate_title(self, message_body: str) -> Optional[str]:
         ai_model_type = self.config["ai_model_type"]
@@ -668,20 +670,23 @@ class MatrixToDiscourseBot(Plugin):
         combined_message = "\n\n".join(message_bodies)
 
         # Generate summary using AI model for multiple messages leave individuals out of summary command
-        if number:
-            #if there are multiple messages, summarize the combined message
-            if len(messages) > 1:   
+        # Generate summary using AI model for multiple messages
+        if messages:
+            if len(messages) > 1:
+                # Summarize the combined message content
                 summary = await self.ai_integration.summarize_content(combined_message)
             else:
-                #if there is only one message, use the message as the summary
-                summary = combined_message
+                # Use the single message directly as the summary
+                summary = message_bodies[0]
         else:
-            #if there are no messages, prompt the user to reply to a message
+            # Prompt the user if no messages are found to summarize
             await evt.reply("Please reply to a message to summarize.")
             return
+
+        # Fallback to the combined message if summarization fails
         if not summary:
-            self.log.warning("Failed to generate summary.")
-            summary = combined_message  # Fallback to combined message
+            self.log.warning("AI summarization failed. Falling back to the original message content.")
+            summary = combined_message
 
         # Determine if a title is required
         ai_model_type = self.config["ai_model_type"]
