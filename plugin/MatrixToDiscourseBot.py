@@ -1173,10 +1173,10 @@ class MatrixToDiscourseBot(Plugin):
             post_body = (
                 f"{summary or 'Content could not be scraped or summarized.'}\n\n"
                 # original link should be full url
-                f"**Original Link:** {url}\n\n"
+                f"**Original Link:** <{url}>\n\n"
                 # bypass links should be markdown links with title of archive services and title of the link
-                f"**12ft.io Link:** [{bypass_links['12ft']}]({bypass_links['12ft']})\n"
-                f"**Archive.org Link:** [{bypass_links['archive']}]({bypass_links['archive']})\n\n"
+                f"**12ft.io Link:** [12ft.io]({bypass_links['12ft']})\n"
+                f"**Archive.org Link:** [Archive.org]({bypass_links['archive']})\n\n"
                 f"User Message: {message_body}\n\n"
                 f"for more on see the [post on bypassing methods](https://forum.irregularchat.com/t/bypass-links-and-methods/98?u=sac) "
             )
