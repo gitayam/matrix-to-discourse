@@ -282,7 +282,7 @@ class AIIntegration:
             return None
 
     async def summarize_with_openai(self, content: str) -> Optional[str]:
-        prompt = f"Please provide a concise summary of the following content:\n\n{content}"
+        prompt = f"Please provide a concise summary which is relevant to the {self.target_audience} of the following content:\n\n{content}"
         try:
             api_key = self.config.get('openai.api_key', None)
             if not api_key:
@@ -321,7 +321,7 @@ class AIIntegration:
 
     async def generate_local_title(self, message_body: str) -> Optional[str]:
         #  local LLM API
-        prompt = f"Create a brief (3-10 word) attention-grabbing title for the following post on the community forum: {message_body}"
+        prompt = f"Create a brief (3-10 word) attention-grabbing title for the {self.target_audience} for the following post on the community forum: {message_body}"
         try:
             pass # Implement local LLM API
         except Exception as e:
@@ -330,7 +330,7 @@ class AIIntegration:
             return None
 
     async def summarize_with_local_llm(self, content: str) -> Optional[str]:
-        prompt = f"Please provide a concise summary of the following content:\n\n{content}"
+        prompt = f"Please provide a concise summary which is relevant to the {self.target_audience} of the following content:\n\n{content}"
         try:
             pass # Implement local LLM API
         except Exception as e:
@@ -339,7 +339,7 @@ class AIIntegration:
             return None
 
     async def generate_google_title(self, message_body: str) -> Optional[str]:
-        prompt = f"Create a brief (3-10 word) attention-grabbing title for the following post on the community forum: {message_body}"
+        prompt = f"Create a brief (3-10 word) attention-grabbing title for the {self.target_audience} for the following post on the community forum: {message_body}"
         try:
             api_key = self.config.get('google.api_key', None)
             if not api_key:
@@ -378,7 +378,7 @@ class AIIntegration:
             return None
 
     async def summarize_with_google(self, content: str) -> Optional[str]:
-        prompt = f"Please provide a concise summary of the following content:\n\n{content}"
+        prompt = f"Please provide a concise summary which is relevant to the {self.target_audience} of the following content:\n\n{content}"
         try:
             api_key = self.config.get('google.api_key', None)
             if not api_key:
