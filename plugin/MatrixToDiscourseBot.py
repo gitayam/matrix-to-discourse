@@ -896,9 +896,8 @@ class MatrixToDiscourseBot(Plugin):
             tags=tags,
         )
         if post_url:
-            await evt.reply(
-                f"Post created from content: {title}, URL: {post_url} \n\n Log in to the community to engage with this post."
-            )
+            posted_link_url = f"{self.config['discourse_base_url']}/tag/posted-link"
+            await evt.reply(f"Forum post created with bypass links: {title}, {post_url} - See all community posted links {posted_link_url}")
         else:
             await evt.reply(f"Failed to create post: {error}")
 
@@ -1202,9 +1201,10 @@ class MatrixToDiscourseBot(Plugin):
 
             if post_url:
                 # Include title in the reply
-                # https://forum.irregularchat.com/tag/posted-link added to the end of the post
+                # URL to the post and tag/posted-link added to the end of the post
                 # not markdown to avoid breaking the post if bridged to signal 
                 # title and link to post
-                await evt.reply(f"Forum post created with bypass links: {title}, {post_url} - See all community posted links https://forum.irregularchat.com/tag/posted-link")
+                posted_link_url = f"{self.config['discourse_base_url']}/tag/posted-link"
+                await evt.reply(f"Forum post created with bypass links: {title}, {post_url} - See all community posted links {posted_link_url}")
             else:
                 await evt.reply(f"Failed to create post: {error}")
