@@ -88,17 +88,6 @@ class AIIntegration:
             self.log.error(f"Unknown AI model type: {ai_model_type}")
             return None
     #generate_tags
-    async def generate_tags(self, content: str) -> Optional[str]:
-        ai_model_type = self.config["ai_model_type"]
-        if ai_model_type == "openai":
-            return await self.generate_openai_tags(content)
-        elif ai_model_type == "local":
-            return await self.generate_local_tags(content)
-        elif ai_model_type == "google":
-            return await self.generate_google_tags(content)
-        else:
-            self.log.error(f"Unknown AI model type: {ai_model_type}")
-            return None
     async def summarize_content(self, content: str) -> Optional[str]:
         ai_model_type = self.config["ai_model_type"]
         if ai_model_type == "openai":
@@ -422,19 +411,6 @@ class DiscourseAPI:
         self.config = config
         self.log = log
     #Get top tags used with discourse api
-    async def get_top_tags(self):
-        #Get top tags used with discourse api using discourse_api_key and discourse_api_username and discourse_base_url
-        url = f"{self.config['discourse_base_url']}/tags.json"
-        headers = {
-            "Content-Type": "application/json",
-            "Api-Key": self.config["discourse_api_key"],
-            "Api-Username": self.config["discourse_api_username"],
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers) as response:
-                response_text = await response.text()
-                return json.loads(response_text)
-
     async def create_post(self, title, raw, category_id, tags=None):
         url = f"{self.config['discourse_base_url']}/posts.json"
         headers = {
@@ -661,7 +637,7 @@ class MatrixToDiscourseBot(Plugin):
             await evt.reply("Please reply to a message or specify either a number of messages (-n) or a timeframe (-h/-m/-d).")
             return
 
-        # Fetch messages
+        # Fetch messages and check if the number of messages is less than the number requested
         messages = []
         if number: # Fetch messages by number meaning the number of messages to summarize
             messages = await self.fetch_messages_by_number(evt, number)
@@ -691,12 +667,16 @@ class MatrixToDiscourseBot(Plugin):
 
         # Generate summary using AI model for multiple messages leave individuals out of summary command
         if number:
+            #if there are multiple messages, summarize the combined message
             if len(messages) > 1:   
                 summary = await self.ai_integration.summarize_content(combined_message)
             else:
+                #if there is only one message, use the message as the summary
                 summary = combined_message
         else:
-            summary = await self.ai_integration.summarize_content(combined_message)
+            #if there are no messages, prompt the user to reply to a message
+            await evt.reply("Please reply to a message to summarize.")
+            return
         if not summary:
             self.log.warning("Failed to generate summary.")
             summary = combined_message  # Fallback to combined message
@@ -721,7 +701,7 @@ class MatrixToDiscourseBot(Plugin):
         self.log.info(f"Generated Title: {title}")
 
         # Generate tags using AI model
-        tags = await self.ai_integration.generate_tags(summary)
+        tags = await self.ai_integration.generate_tag(summary)
         if not tags:
             tags = ["bot-post"]  # Fallback tags if generation fails
 
