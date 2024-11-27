@@ -282,7 +282,8 @@ class AIIntegration:
             return None
 
     async def summarize_with_openai(self, content: str) -> Optional[str]:
-        prompt = f"Please provide a concise summary which is relevant to the target audience {self.target_audience} of the following content please don't any of the target audience description in the summary:\n\n{content}"
+        prompt = f"""Please provide a concise summary of the following content identifying key points and references and a brief executive summary.
+        if there isn't enough information please just say 'Not Enough Information to Summarize':\n\n{content}"""
         try:
             api_key = self.config.get('openai.api_key', None)
             if not api_key:
@@ -549,6 +550,7 @@ def generate_bypass_links(url: str) -> Dict[str, str]:
         "original": url,
         "12ft": f"https://12ft.io/{url}",
         "archive": f"https://web.archive.org/web/{url}",
+        "tinyurl": f"https://tinyurl.com/{url}",
     }
     return links
 
@@ -1020,9 +1022,10 @@ class MatrixToDiscourseBot(Plugin):
             post_body = (
                 f"**Posted by:** @{username}\n\n"
                 f"{summary or 'Content could not be scraped or summarized.'}\n\n"
-                f"**Original Link:** {bypass_links['original']}\n"
+                f"**Original Link:** {bypass_links['original']}\n\n"
                 f"**12ft.io Link:** {bypass_links['12ft']}\n"
-                f"**Archive.org Link:** {bypass_links['archive']}"
+                f"**Archive.org Link:** {bypass_links['archive']}\n\n"
+                f"for more on see the [post on bypassing methods](https://forum.irregularchat.com/t/bypass-links-and-methods/98?u=sac) "
             )
 
             # Create the post on Discourse
