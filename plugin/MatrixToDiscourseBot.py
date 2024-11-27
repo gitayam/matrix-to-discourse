@@ -430,13 +430,14 @@ class DiscourseAPI:
             "Api-Key": self.config["discourse_api_key"],
             "Api-Username": self.config["discourse_api_username"],
         }
+        # Log the payload
         payload = {
             "title": title,
             "raw": raw,
             "category": category_id,
             "tags": tags or [],
         }
-
+        
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json=payload) as response:
                 response_text = await response.text()
@@ -458,7 +459,7 @@ class DiscourseAPI:
                 else:
                     self.log.error(f"Discourse API error: {response.status} {data}")
                     return None, f"Failed to create post: {response.status}\nResponse: {response_text}"
-
+    # Check for duplicate posts with discourse api
     async def check_for_duplicate(self, url: str) -> bool:
         search_url = f"{self.config['discourse_base_url']}/search.json"
         headers = {
@@ -467,7 +468,7 @@ class DiscourseAPI:
             "Api-Username": self.config["discourse_api_username"],
         }
         params = {"q": url}
-
+        # Log the params
         async with aiohttp.ClientSession() as session:
             async with session.get(search_url, headers=headers, params=params) as response:
                 response_text = await response.text()
@@ -482,7 +483,7 @@ class DiscourseAPI:
                 else:
                     self.log.error(f"Discourse API error: {response.status} {response_json}")
                     return False
-
+    # Search the discourse api for a query
     async def search_discourse(self, query: str):
         search_url = f"{self.config['discourse_base_url']}/search.json"
         headers = {
@@ -506,7 +507,7 @@ class DiscourseAPI:
                 else:
                     self.log.error(f"Discourse API error: {response.status} {response_json}")
                     return None
-    # get_top_tags 
+    # get_top_tags from discourse api to use for tags
     async def get_top_tags(self):
         """Fetch top tags from Discourse API.
         
@@ -519,7 +520,7 @@ class DiscourseAPI:
             "Api-Key": self.config["discourse_api_key"],
             "Api-Username": self.config["discourse_api_username"],
         }
-
+        # using try because the api key may be invalid
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=headers) as response:
@@ -535,7 +536,7 @@ class DiscourseAPI:
                     else:
                         self.log.error(f"Discourse API error: {response.status} {response_json}")
                         return None
-
+        # Log the error if there is one
         except Exception as e:
             self.log.error(f"Error fetching top tags: {e}")
             return None
@@ -544,7 +545,7 @@ class DiscourseAPI:
 def extract_urls(text: str) -> List[str]:
     url_regex = r'(https?://\S+)'
     return re.findall(url_regex, text)
-
+# Generate bypass links for the url
 def generate_bypass_links(url: str) -> Dict[str, str]:
     links = {
         "original": url,
@@ -720,7 +721,14 @@ class MatrixToDiscourseBot(Plugin):
                 summary = await self.ai_integration.summarize_content(combined_message)
             else:
                 # Use the single message directly as the summary
-                summary = message_bodies[0]
+                #summarize the single message and add it to the content of the post above the original message
+                head_summary = await self.ai_integration.summarize_content(message_bodies[0])
+                if head_summary:
+                    # Add the summary to the content of the post above the original message
+                    summary = f"{head_summary}\n\n---\n\nOriginal Message:\n{message_bodies[0]}"
+                else:
+                    # If the summary fails, use the original message without the summary
+                    summary = message_bodies[0]
         else:
             # Prompt the user if no messages are found to summarize
             await evt.reply("Please reply to a message to summarize.")
@@ -772,7 +780,7 @@ class MatrixToDiscourseBot(Plugin):
         )
         if post_url:
             await evt.reply(
-                f"Bypass links created and saved for future reference: {title}, URL: {post_url} \n\n Log in to the community to engage with this post."
+                f"Post created from content: {title}, URL: {post_url} \n\n Log in to the community to engage with this post."
             )
         else:
             await evt.reply(f"Failed to create post: {error}")
