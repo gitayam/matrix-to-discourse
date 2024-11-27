@@ -5,7 +5,7 @@ import traceback
 import aiohttp
 import logging
 import argparse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Type, Dict, List, Optional
 
 from mautrix.client import Client
@@ -897,6 +897,8 @@ class MatrixToDiscourseBot(Plugin):
         )
         if post_url:
             posted_link_url = f"{self.config['discourse_base_url']}/tag/posted-link"
+            # post_url should not be markdown
+            post_url = post_url.replace("[", "").replace("]", "")
             await evt.reply(f"Forum post created with bypass links: {title}, {post_url} - See all community posted links {posted_link_url}")
         else:
             await evt.reply(f"Failed to create post: {error}")
@@ -998,7 +1000,7 @@ class MatrixToDiscourseBot(Plugin):
 
             for event in events:
                 if event.type == EventType.ROOM_MESSAGE and event.sender != self.client.mxid:
-                    event_time = datetime.utcfromtimestamp(event.server_timestamp / 1000)
+                    event_time = datetime.fromtimestamp(event.server_timestamp / 1000, timezone.utc)
                     if event_time < end_time:
                         return messages
                     messages.append(event)
