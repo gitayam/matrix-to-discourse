@@ -90,6 +90,18 @@ class AIIntegration:
         else:
             self.log.error(f"Unknown AI model type: {ai_model_type}")
             return None
+    #generate_links_title
+    async def generate_links_title(self, message_body: str) -> Optional[str]:
+        ai_model_type = self.config["ai_model_type"]
+        if ai_model_type == "openai":
+            return await self.generate_openai_links_title(message_body)
+        elif ai_model_type == "local":
+            return await self.generate_local_links_title(message_body)
+        elif ai_model_type == "google":
+            return await self.generate_google_links_title(message_body)
+        else:
+            self.log.error(f"Unknown AI model type: {ai_model_type}")
+            return None
     #generate_tags
     async def summarize_content(self, content: str) -> Optional[str]:
         ai_model_type = self.config["ai_model_type"]
@@ -242,9 +254,16 @@ class AIIntegration:
             tb = traceback.format_exc()
             self.log.error(f"Error generating tags: {e}\n{tb}")
             return None
+    generate_title_prompt = "Create a brief (3-10 word) attention-grabbing title for the {target_audience} for the following post on the community forum: {message_body}"
+    generate_links_title_prompt = "Create a brief (3-10 word) attention-grabbing title for the following post on the community forum include the source and title of the linked content: {message_body}"
     # Implement the methods for each AI model
-    async def generate_openai_title(self, message_body: str) -> Optional[str]:
-        prompt = f"Create a brief (3-10 word) attention-grabbing title for the {self.target_audience} for the following post on the community forum but don't use the target audience description and if the target audience is not specified just use the message body: {message_body}"
+    # when called generate_title_prompt or generate_links_title_prompt will be used
+    async def generate_openai_title(self, message_body: str, use_links_prompt: bool = False) -> Optional[str]:
+        # Choose the appropriate prompt based on the use_links_prompt flag
+        if use_links_prompt:
+            prompt = self.generate_links_title_prompt.format(message_body=message_body)
+        else:
+            prompt = self.generate_title_prompt.format(target_audience=self.target_audience, message_body=message_body)
         try:
             api_key = self.config.get('openai.api_key', None)
             if not api_key:
@@ -320,9 +339,12 @@ class AIIntegration:
             self.log.error(f"Error summarizing with OpenAI: {e}\n{tb}")
             return None
 
-    async def generate_local_title(self, message_body: str) -> Optional[str]:
+    async def generate_local_title(self, message_body: str, use_links_prompt: bool = False) -> Optional[str]:
         #  local LLM API
-        prompt = f"Create a brief (3-10 word) attention-grabbing title for the {self.target_audience} for the following post on the community forum: {message_body}"
+        if use_links_prompt:
+            prompt = self.generate_links_title_prompt.format(message_body=message_body)
+        else:
+            prompt = self.generate_title_prompt.format(target_audience=self.target_audience, message_body=message_body)
         try:
             pass # Implement local LLM API
         except Exception as e:
@@ -339,8 +361,11 @@ class AIIntegration:
             self.log.error(f"Error summarizing with local LLM: {e}\n{tb}")
             return None
 
-    async def generate_google_title(self, message_body: str) -> Optional[str]:
-        prompt = f"Create a brief (3-10 word) attention-grabbing title for the {self.target_audience} for the following post on the community forum: {message_body}"
+    async def generate_google_title(self, message_body: str, use_links_prompt: bool = False) -> Optional[str]:
+        if use_links_prompt:
+            prompt = self.generate_links_title_prompt.format(message_body=message_body)
+        else:
+            prompt = self.generate_title_prompt.format(target_audience=self.target_audience, message_body=message_body)
         try:
             api_key = self.config.get('google.api_key', None)
             if not api_key:
@@ -460,29 +485,58 @@ class DiscourseAPI:
                     self.log.error(f"Discourse API error: {response.status} {data}")
                     return None, f"Failed to create post: {response.status}\nResponse: {response_text}"
     # Check for duplicate posts with discourse api
-    async def check_for_duplicate(self, url: str) -> bool:
-        search_url = f"{self.config['discourse_base_url']}/search.json"
+    async def check_for_duplicate(self, url: str, tag: str = "posted-link") -> bool:
+        """
+        Check for duplicate posts by searching for a URL within posts tagged with a specific tag.
+
+        Args:
+            url (str): The URL to check for duplicates.
+            tag (str): The tag to filter posts. Defaults to "posted-link".
+
+        Returns:
+            bool: True if a duplicate post is found, False otherwise.
+        """
+        search_url = f"{self.config['discourse_base_url']}/search/query.json"
         headers = {
             "Content-Type": "application/json",
             "Api-Key": self.config["discourse_api_key"],
             "Api-Username": self.config["discourse_api_username"],
         }
-        params = {"q": url}
-        # Log the params
-        async with aiohttp.ClientSession() as session:
-            async with session.get(search_url, headers=headers, params=params) as response:
-                response_text = await response.text()
-                try:
-                    response_json = json.loads(response_text)
-                except json.JSONDecodeError as e:
-                    self.log.error(f"Error decoding Discourse response: {e}\nResponse text: {response_text}")
-                    return False
 
-                if response.status == 200:
-                    return bool(response_json.get("topics"))
-                else:
-                    self.log.error(f"Discourse API error: {response.status} {response_json}")
-                    return False
+        # Extract base URL without tracking or query data
+        base_url = re.sub(r'\?.*$', '', url)  # Remove query parameters
+        self.log.debug(f"Checking for duplicates of base URL: {base_url}")
+
+        # Search for posts tagged with the specific tag
+        params = {"term": f'tags:{tag}'}
+        self.log.debug(f"Searching Discourse with params: {params}")
+
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.get(search_url, headers=headers, params=params) as response:
+                    if response.status != 200:
+                        self.log.error(f"Discourse API error: {response.status}")
+                        return False
+
+                    response_json = await response.json()
+                    self.log.debug(f"Received response: {response_json}")
+
+                    # Check each post for the base URL in its "raw" content
+                    for post in response_json.get("posts", []):
+                        raw_content = post.get("raw", "")
+                        self.log.debug(f"Checking post ID {post.get('id')} with raw content: {raw_content}")
+
+                        if "Original Link:" in raw_content and base_url in raw_content:
+                            self.log.info(f"Duplicate post found: {post.get('topic_id')}")
+                            return True
+
+            except Exception as e:
+                self.log.error(f"Error during Discourse API request: {e}")
+                return False
+
+        self.log.info("No duplicate found.")
+        return False
+    
     # Search the discourse api for a query
     async def search_discourse(self, query: str):
         search_url = f"{self.config['discourse_base_url']}/search.json"
@@ -895,7 +949,10 @@ class MatrixToDiscourseBot(Plugin):
                 break
 
         return messages
-
+    # Function to generate title for bypassed links
+    async def generate_title_for_bypassed_links(self, message_body: str) -> Optional[str]:
+        return await self.ai_integration.generate_links_title(message_body)
+    
     # Function to generate title
     async def generate_title(self, message_body: str) -> Optional[str]:
         return await self.ai_integration.generate_title(message_body)
@@ -1042,6 +1099,15 @@ class MatrixToDiscourseBot(Plugin):
                 f"**Archive.org Link:** {bypass_links['archive']}\n\n"
                 f"for more on see the [post on bypassing methods](https://forum.irregularchat.com/t/bypass-links-and-methods/98?u=sac) "
             )
+
+            # Determine the topic ID based on the room ID
+            topic_id = self.config["matrix_to_discourse_topic"].get(
+                # if the room is not in the matrix_to_discourse_topic, use the unsorted_category_id
+                evt.room_id, self.config["unsorted_category_id"]
+            )
+
+            # Log the category ID being used
+            self.log.info(f"Using category ID: {topic_id}")
 
             # Create the post on Discourse
             tags = ["posted-link"]
