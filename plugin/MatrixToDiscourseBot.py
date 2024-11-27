@@ -68,7 +68,56 @@ class Config(BaseProxyConfig):
             self["url_patterns"] = list(helper.base["url_patterns"])
         else:
             self["url_patterns"] = []
+        
+        # isolation
+        helper.copy("room_whitelist")
+        helper.copy("user_whitelist")
+        helper.copy("user_blacklist")
+        helper.copy("command_prefix") # command prefix for the bot to see commands
 
+class ConfigurableBot(Plugin):
+    async def start(self) -> None:
+        self.config.load_and_update()
+
+    def get_command_name(self) -> str:
+        command_name = self.config.get("command_prefix", "default")
+        self.log.info(f"Using command prefix: {command_name}")
+        return command_name
+
+    @command.new(name=get_command_name)
+    async def hmm(self, evt: MessageEvent) -> None:
+        # Retrieve configuration with default values
+        room_whitelist = self.config.get("room_whitelist", None)
+        user_blacklist = self.config.get("user_blacklist", None)
+        user_whitelist = self.config.get("user_whitelist", None)
+        # Debug logs to verify configurations
+        self.log.info(f"Room whitelist: {room_whitelist}")
+        self.log.info(f"User whitelist: {user_whitelist}")
+        self.log.info(f"User blacklist: {user_blacklist}")
+        # If room_whitelist is not set, allow all rooms
+        if room_whitelist is not None and evt.room_id not in room_whitelist:
+            self.log.info(f"Room {evt.room_id} is not whitelisted.")
+            await evt.reply("This room is not whitelisted for commands.")
+            return
+        
+        # If user_blacklist is set, check if the user is blacklisted
+        if user_blacklist is not None and evt.sender in user_blacklist:
+            self.log.info(f"User {evt.sender} is blacklisted.")
+            return
+        
+        # If user_whitelist is set, check if the user is whitelisted
+        if user_whitelist is not None and evt.sender not in user_whitelist:
+            self.log.info(f"User {evt.sender} is not whitelisted.")
+            return
+        
+        # If no lists are set, proceed with the command
+        self.log.info(f"Proceeding with command for user {evt.sender}.")
+        await self.handle_command(evt)
+
+    @classmethod
+    def get_config_class(cls) -> Type[BaseProxyConfig]:
+        return Config
+    
 # AIIntegration class
 class AIIntegration:
     def __init__(self, config, log):

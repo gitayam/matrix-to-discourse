@@ -12,6 +12,24 @@ discourse_api_key: "discourse_api_key"
 discourse_api_username: "discourse_api_username"
 discourse_base_url: "https://discourse.example.com"
 
+# Whitelist of rooms for the bot to post to.    
+# The bot will only post to rooms that are in this list.
+# The format is "!roomID:server" where roomID is the room ID and server is the server URL.
+# Uncomment the following line to enable the whitelist.
+# room_whitelist:
+#   - "!roomID1:server"
+#   - "!roomID2:server"
+
+# # Whitelist of users who are allowed to interact with the bot.
+# user_whitelist:
+#   - "@user1:example.com"
+#   - "@user2:example.com"
+
+# # Blacklist of users who are not allowed to interact with the bot.
+# user_blacklist:
+#   - "@user3:example.com"
+#   - "@user4:example.com"
+
 # To get your category ID, go to https://discourse.example.com/c/your-category-name.json
 matrix_to_discourse_topic:
   "!roomID1:server": "topic_id_1"
