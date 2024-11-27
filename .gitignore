@@ -168,3 +168,6 @@ cython_debug/
 *.mbp
 matrix-to-discourse-urls.mbp
 plugin.zip
+plugin/plugin.py
+plugin/urlpreview_ext_json.py
+plugin/urlpreview_utils.py
