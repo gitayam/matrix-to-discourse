@@ -1,3 +1,4 @@
+# MatrixToDiscourseBot.py is the main file for the MatrixToDiscourseBot plugin. It contains the main class for the plugin, which handles the Discourse API integration and the AI integration. It also contains the methods for generating titles, summaries, and tags.
 import asyncio
 import json
 import re
