@@ -31,31 +31,27 @@ class Config(BaseProxyConfig):
     def do_update(self, helper: ConfigUpdateHelper) -> None:
         # General configuration
         helper.copy("ai_model_type")  # AI model type: openai, google, local, none
-
         # OpenAI configuration
         helper.copy("openai.api_key")
         helper.copy("openai.api_endpoint")
         helper.copy("openai.model")
         helper.copy("openai.max_tokens")
         helper.copy("openai.temperature")
-
         # Local LLM configuration
         helper.copy("local_llm.model_path")
         helper.copy("local_llm.api_endpoint")
-
         # Google Gemini configuration
         helper.copy("google.api_key")
         helper.copy("google.api_endpoint")
         helper.copy("google.model")
         helper.copy("google.max_tokens")
         helper.copy("google.temperature")
-
         # Discourse configuration
-        helper.copy("discourse_api_key") # api key for discourse
-        helper.copy("discourse_api_username") # username for discourse
-        helper.copy("discourse_base_url") # base url for discourse
-        helper.copy("unsorted_category_id") # id of the category to use if the room is not in the matrix_to_discourse_topic dictionary
-        helper.copy("matrix_to_discourse_topic") # dictionary of room_id: topic_id
+        helper.copy("discourse_api_key")  # API key for discourse
+        helper.copy("discourse_api_username")  # Username for discourse
+        helper.copy("discourse_base_url")  # Base URL for discourse
+        helper.copy("unsorted_category_id")  # Default category ID
+        helper.copy("matrix_to_discourse_topic")  # Room-to-topic ID map
 
         # Command triggers
         helper.copy("search_trigger") # trigger for the search command
@@ -63,12 +59,16 @@ class Config(BaseProxyConfig):
         helper.copy("help_trigger") # trigger for the help command
         helper.copy("url_post_trigger") # trigger for the url post command
         helper.copy("target_audience") # target audience context for ai generation
-        # Handle URL patterns explicitly as a list
+        # Handle URL patterns and blacklist separately
         if "url_patterns" in helper.base:
             self["url_patterns"] = list(helper.base["url_patterns"])
         else:
-            self["url_patterns"] = []
+            self["url_patterns"] = ["https?://.*"]  # Default to match all URLs
 
+        if "url_blacklist" in helper.base:
+            self["url_blacklist"] = list(helper.base["url_blacklist"])
+        else:
+            self["url_blacklist"] = [] 
 # AIIntegration class
 class AIIntegration:
     """
@@ -711,10 +711,7 @@ async def scrape_content(url: str) -> Optional[str]:
 # Keywords: {keywords}
 
 # First Paragraph:
-# {first_paragraph}
-
-# Last Paragraph:
-# {last_paragraph}# """
+# {first_paragraph}# """
 #         return content.strip()
 
 #     except Exception as e:
@@ -1114,24 +1111,46 @@ class MatrixToDiscourseBot(Plugin):
             return
 
         await self.process_link(evt, message_body)
+        
+    def should_process_url(self, url: str) -> bool:
+        """
+        Check if a URL should be processed based on patterns and blacklist.
+
+        Args:
+        url (str): The URL to check
+        
+        Returns:
+            bool: True if the URL should be processed, False otherwise
+        """
+        # First check blacklist
+        for blacklist_pattern in self["url_blacklist"]:
+            if re.match(blacklist_pattern, url, re.IGNORECASE):
+                logger.debug(f"URL {url} matches blacklist pattern {blacklist_pattern}")
+                return False
+    
+        # Then check whitelist patterns
+        for pattern in self["url_patterns"]:
+            if re.match(pattern, url, re.IGNORECASE):
+                logger.debug(f"URL {url} matches whitelist pattern {pattern}")
+                return True
+    
+        # If no patterns match, don't process the URL
+        return False
 
     # Process links in messages
     async def process_link(self, evt: MessageEvent, message_body: str) -> None:
         urls = extract_urls(message_body)
         username = evt.sender.split(":")[0]  # Extract the username from the sender
+        
+        # Filter URLs based on patterns and blacklist
+        urls_to_process = [url for url in urls if self.config.should_process_url(url)]
 
-        # Generate a summary using the entire message body
-        summary = await self.ai_integration.summarize_content(message_body, user_message=message_body)
-        if not summary:
-            self.log.warning("Summarization failed for the message body.")
-            summary = "Content could not be scraped or summarized."
+        if not urls_to_process:
+            self.log.debug("No URLs matched the configured patterns or all URLs were blacklisted")
+            await evt.reply("No valid URLs found to process.")
+            return
 
-        # Generate a title using the message body
-        title = await self.ai_integration.generate_links_title(message_body)
-        if not title:
-            title = "Bypassed Link with Pending Title"
-
-        for url in urls:
+        for url in urls_to_process:
             # Check for duplicates
             duplicate_exists = await self.discourse_api.check_for_duplicate(url)
             if duplicate_exists:
@@ -1145,18 +1164,18 @@ class MatrixToDiscourseBot(Plugin):
                 summary = await self.ai_integration.summarize_content(content, user_message=message_body)
                 if not summary:
                     self.log.warning(f"Summarization failed for URL: {url}")
+                    summary = "Content could not be scraped or summarized."
             else:
                 self.log.warning(f"Scraping content failed for URL: {url}")
+                summary = "Content could not be scraped or summarized."
 
             # Generate title
-            if summary:
-                title = await self.ai_integration.generate_links_title(message_body)
-            else:
+            title = await self.ai_integration.generate_links_title(message_body)
+            if not title:
                 self.log.info(f"Generating title using URL and domain for: {url}")
                 title = await self.ai_integration.generate_links_title(f"URL: {url}, Domain: {url.split('/')[2]}")
-
-            if not title:
-                title = "Untitled Post"
+                if not title:
+                    title = "Untitled Post"
 
             # Generate tags
             tags = await self.ai_integration.generate_tags(content)
@@ -1171,22 +1190,18 @@ class MatrixToDiscourseBot(Plugin):
 
             # Prepare message body
             post_body = (
-                f"{summary or 'Content could not be scraped or summarized.'}\n\n"
+                f"{summary}\n\n"
                 # original link should be full url
                 f"**Original Link:** <{url}>\n\n"
                 # bypass links should be markdown links with title of archive services and title of the link
                 f"**12ft.io Link:** [12ft.io]({bypass_links['12ft']})\n"
                 f"**Archive.org Link:** [Archive.org]({bypass_links['archive']})\n\n"
                 f"User Message: {message_body}\n\n"
-                f"for more on see the [post on bypassing methods](https://forum.irregularchat.com/t/bypass-links-and-methods/98?u=sac) "
+                f"for more on see the [post on bypassing methods](https://forum.irregularchat.com/t/bypass-links-and-methods/98?u=sac)"
             )
 
-            # Attempt to use the identified category room
-            category_id = self.config["matrix_to_discourse_topic"].get(evt.room_id)
-            
-            # Fallback to unsorted category ID if no specific category is found
-            if not category_id:
-                category_id = self.config["unsorted_category_id"]
+            # Determine category ID based on room ID
+            category_id = self.config["matrix_to_discourse_topic"].get(evt.room_id, self.config["unsorted_category_id"])
 
             # Log the category ID being used
             self.log.info(f"Using category ID: {category_id}")
@@ -1200,11 +1215,9 @@ class MatrixToDiscourseBot(Plugin):
             )
 
             if post_url:
-                # Include title in the reply
-                # URL to the post and tag/posted-link added to the end of the post
-                # not markdown to avoid breaking the post if bridged to signal 
-                # title and link to post
                 posted_link_url = f"{self.config['discourse_base_url']}/tag/posted-link"
-                await evt.reply(f"🔗Forum post created with bypass links: {title}, {post_url} ")
+                # post_url should not be markdown
+                post_url = post_url.replace("[", "").replace("]", "")
+                await evt.reply(f"🔗Forum post created with bypass links: {title}, {post_url}")
             else:
                 await evt.reply(f"Failed to create post: {error}")

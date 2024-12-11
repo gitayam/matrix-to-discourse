@@ -97,3 +97,11 @@ google:
 
 url_patterns:
   - https?://.*  # Match all URLs
+
+# Match URLs regular expressions that should not be posted
+url_blacklist:
+  - https?://.*\.pdf$
+  - https?://.*\.doc$
+  - https?://.*\.docx$
+  - https?://.*\.ppt$
+  - https?://.*\.pptx$
