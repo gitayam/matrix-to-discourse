@@ -22,6 +22,7 @@ from maubot.handlers import command, event
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 # from selenium import webdriver
 # from selenium.webdriver.chrome.options import Options
+from bs4 import BeautifulSoup as bs
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -669,59 +670,59 @@ def generate_bypass_links(url: str) -> Dict[str, str]:
     return links
 
 async def scrape_content(url: str) -> Optional[str]:
-    #for testing just output the url
-    return url
-    # Scrape the content of the URL for title, description, and keywords, seo using selenium
-#     chrome_options = Options()
-#     chrome_options.add_argument('--headless')
-#     chrome_options.add_argument('--no-sandbox')
-#     chrome_options.add_argument('--disable-dev-shm-usage')
+    """
+    Asynchronously scrape the web page at the given URL and extract the title,
+    meta description, meta keywords, and the first paragraph.
 
-#     driver = None
-#     try:
-#         driver = webdriver.Chrome(options=chrome_options)
-#         driver.get(url)
-        
-#         # Get title
-#         title = driver.title
+    Args:
+        url (str): The URL of the web page to scrape.
 
-#         # Get meta description
-#         description = ""
-#         desc_elem = driver.find_elements("xpath", "//meta[@name='description']")
-#         if desc_elem:
-#             description = desc_elem[0].get_attribute("content")
+    Returns:
+        Optional[str]: A formatted string containing the extracted information,
+                       or None if an error occurs.
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    logger.error(f"Error fetching URL {url}: HTTP {response.status}")
+                    return None
+                html = await response.text()
 
-#         # Get meta keywords
-#         keywords = ""
-#         keywords_elem = driver.find_elements("xpath", "//meta[@name='keywords']")
-#         if keywords_elem:
-#             keywords = keywords_elem[0].get_attribute("content")
+        soup = bs(html, 'html.parser')
 
-#         # Get paragraphs
-#         paragraphs = driver.find_elements("xpath", "//p")
-#         first_paragraph = paragraphs[0].text if paragraphs else ""
-#         last_paragraph = paragraphs[-1].text if paragraphs else ""
+        # Get title
+        title = soup.title.string.strip() if soup.title and soup.title.string else ""
 
-#         # Combine content
-#         content = f"""
-# Title: {title}
+        # Get meta description
+        description_tag = soup.find('meta', attrs={'name': 'description'})
+        description = description_tag['content'].strip() if description_tag and 'content' in description_tag.attrs else ""
 
-# Description: {description}
+        # Get meta keywords
+        keywords_tag = soup.find('meta', attrs={'name': 'keywords'})
+        keywords = keywords_tag['content'].strip() if keywords_tag and 'content' in keywords_tag.attrs else ""
 
-# Keywords: {keywords}
+        # Get first paragraph
+        first_p_tag = soup.find('p')
+        first_paragraph = first_p_tag.get_text(strip=True) if first_p_tag else ""
 
-# First Paragraph:
-# {first_paragraph}# """
-#         return content.strip()
+        # Combine content
+        content = f"""
+Title: {title}
 
-#     except Exception as e:
-#         logger.error(f"Error scraping content: {str(e)}")
-#         return None
+Description: {description}
 
-#     finally:
-#         if driver:
-#             driver.quit()
+Keywords: {keywords}
 
+First Paragraph:
+{first_paragraph}
+"""
+
+        return content.strip()
+
+    except Exception as e:
+        logger.error(f"Error scraping content from {url}: {str(e)}")
+        return None
 
 # Main plugin class
 class MatrixToDiscourseBot(Plugin):
