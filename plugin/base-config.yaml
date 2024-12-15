@@ -64,6 +64,16 @@ google:
 
 ###### URL Pattern Configuration ######
 # The bot will only respond to URLs that match these patterns
+url_listening: false
+url_patterns:
+  - https?://.*  # Match all URLs
+# Match URLs regular expressions that should not be posted
+url_blacklist:
+  - https?://.*\.pdf$
+  - https?://.*\.doc$
+  - https?://.*\.docx$
+  - https?://.*\.ppt$
+  - https?://.*\.pptx$
 # Examples:
 # - Match All URLs:
 #   - https?://.*
@@ -119,13 +129,3 @@ google:
 #   - https?://(www\.)?reddit\.com/.*          # Reddit URLs
 #   - https?://.*\.(pdf)$                      # PDFs
 #   - https?://.*\.(jpg|jpeg|png|gif|webp)$    # Images
-
-url_patterns:
-  - https?://.*  # Match all URLs
-# Match URLs regular expressions that should not be posted
-url_blacklist:
-  - https?://.*\.pdf$
-  - https?://.*\.doc$
-  - https?://.*\.docx$
-  - https?://.*\.ppt$
-  - https?://.*\.pptx$
