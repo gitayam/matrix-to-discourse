@@ -21,10 +21,10 @@ from mautrix.types import (
 from maubot import Plugin, MessageEvent
 from maubot.handlers import command, event
 
-from config import Config
-from ai_integration import AIIntegration
-from discourse_api import DiscourseAPI
-from utils import extract_urls, generate_bypass_links, scrape_content
+from plugin.config import Config
+from plugin.ai_integration import AIIntegration
+from plugin.discourse_api import DiscourseAPI
+from plugin.utils import extract_urls, generate_bypass_links, scrape_content
 
 logger = logging.getLogger(__name__)
 

@@ -4,7 +4,7 @@ import json
 import traceback
 from typing import Optional, List
 
-from discourse_api import DiscourseAPI
+from plugin.discourse_api import DiscourseAPI
 
 class AIIntegration:
     """
