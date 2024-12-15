@@ -67,7 +67,32 @@ google:
 # Examples:
 # - Match All URLs:
 #   - https?://.*
-
+# - Match News Websites:
+  # - https://(www\.)?abcnews\.go\.com/.*
+  # - https://(www\.)?aljazeera\.com/.*
+  # - https://(www\.)?apnews\.com/.*
+  # - https://(www\.)?bbc\.com/.*
+  # - https://(www\.)?dailywire\.com/.*
+  # - https://(www\.)?independent\.co\.uk/.*
+  # - https://(www\.)?nbcnews\.com/.*
+  # - https://(www\.)?nyt\.com/.*
+  # - https://(www\.)?nytimes\.com/.*
+  # - https://(www\.)?republicworld\.com/.*
+  # - https://(www\.)?thesun\.co\.uk/.*
+  # - https://(www\.)?theguardian\.com/.*
+  # - https://(www\.)?usatoday\.com/.*
+  # - https://(www\.)?washingtonpost\.com/.*
+  # - https://(www\.)?wsj\.com/.*
+  # - https://(www\.)?airandspaceforces\.com/.*
+  # - https://(www\.)?theatlantic\.com/.*
+  # - https://(www\.)?bloomberg\.com/.*
+  # - https://(www\.)?cnn\.com/.*
+  # - https://(www\.)?fox\.com/.*
+  # - https://(www\.)?smartnews\.com/.*
+  # - https://(www\.)?businessinsider\.com/.*
+  # - https://(www\.)?foreignaffairs\.com/.*
+  # - https://(www\.)?economist\.com/.*
+  
 # - Match Only PDF Files:
 #   - https?://.*\.pdf$
 
