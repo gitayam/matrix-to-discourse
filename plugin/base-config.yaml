@@ -20,6 +20,12 @@ matrix_to_discourse_topic:
 # The category ID for the unsorted category
 unsorted_category_id: "topic_id_9"
 
+
+# accounts to ignore to avoid spamming and duplicate posts from bots for example
+ignored_accounts:
+  - ignoreduser1
+  - ignoreduser2
+
 ######### AI Model Configuration #########
 ## GPT is used for creating titles and descriptions for new topics based on a post.
 

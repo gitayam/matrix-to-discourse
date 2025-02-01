@@ -1,0 +1,63 @@
+templates:
+    newsarchiver:
+        type: m.room.message
+        content:
+            msgtype: m.text
+            body: Paywall and Ad Bypass of Your Link https://12ft.io/$${0} --OR-- https://web.archive.org/web/2025/$${0}
+    socialmedia_tracker_removal:
+        type: m.room.message
+        content:
+            msgtype: m.text
+            body: "Social Media Tracker Removed: $${0}"
+            
+            
+default_flags:
+- ignorecase
+antispam:
+    room:
+        max: 10
+        delay: 5
+    user:
+        max: 20
+        delay: 1
+
+rules:
+    news:
+        matches:
+        - https://(www\.)?abcnews\.go\.com/.*
+        - https://(www\.)?aljazeera\.com/.*
+        - https://(www\.)?apnews\.com/.*
+        - https://(www\.)?bbc\.com/.*
+        - https://(www\.)?dailywire\.com/.*
+        - https://(www\.)?independent\.co\.uk/.*
+        - https://(www\.)?nbcnews\.com/.*
+        - https://(www\.)?nyt\.com/.*
+        - https://(www\.)?nytimes\.com/.*
+        - https://(www\.)?republicworld\.com/.*
+        - https://(www\.)?thesun\.co\.uk/.*
+        - https://(www\.)?theguardian\.com/.*
+        - https://(www\.)?usatoday\.com/.*
+        - https://(www\.)?washingtonpost\.com/.*
+        - https://(www\.)?wsj\.com/.*
+        - https://(www\.)?airandspaceforces\.com/.*
+        - https://(www\.)?theatlantic\.com/.*
+        - https://(www\.)?bloomberg\.com/.*
+        - https://(www\.)?cnn\.com/.*
+        - https://(www\.)?fox\.com/.*
+        - https://(www\.)?smartnews\.com/.*
+        - https://(www\.)?businessinsider\.com/.*
+        - https://(www\.)?foreignaffairs\.com/.*
+        - https://(www\.)?economist\.com/.*
+        template: newsarchiver
+    socialmedia_tracker_removal:
+        matches:
+        - https://(www\.)?tiktok\.com/[^?]*
+        - https://(www\.)?instagram\.com/[^?]*
+        - https://(www\.)?twitter\.com/[^?]*
+        - https://(www\.)?facebook\.com/[^?]*
+        - https://(www\.)?threads\.net/[^?]*
+        - https://(www\.)?linkedin\.com/[^?]*
+        - https://(www\.)?reddit\.com/[^?]*
+        - https://(www\.)?pinterest\.com/[^?]*
+        - https://(www\.)?youtube\.com/[^?]*
+        template: socialmedia_tracker_removal

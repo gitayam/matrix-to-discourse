@@ -1,3 +1,4 @@
+# MatrixToDiscourseBot.py is the main file for the MatrixToDiscourseBot plugin. It contains the code for the bot's commands and the Discourse API integration.
 import asyncio
 import json
 import re
@@ -7,7 +8,6 @@ import logging
 import argparse
 from datetime import datetime, timedelta, timezone
 from typing import Type, Dict, List, Optional
-
 from mautrix.client import Client
 from mautrix.types import (
     Format,
@@ -20,10 +20,7 @@ from mautrix.types import (
 from maubot import Plugin, MessageEvent
 from maubot.handlers import command, event
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
-# from selenium import webdriver
-# from selenium.webdriver.chrome.options import Options
-from bs4 import BeautifulSoup as bs
-
+from bs4 import BeautifulSoup
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -53,13 +50,15 @@ class Config(BaseProxyConfig):
         helper.copy("discourse_base_url")  # Base URL for discourse
         helper.copy("unsorted_category_id")  # Default category ID
         helper.copy("matrix_to_discourse_topic")  # Room-to-topic ID map
-
+        # Whitelists and Blacklists
+        helper.copy("ignored_accounts")  # accounts to ignore to avoid spamming and duplicate posts from bots for example
         # Command triggers
         helper.copy("search_trigger") # trigger for the search command
         helper.copy("post_trigger") # trigger for the post command
         helper.copy("help_trigger") # trigger for the help command
         helper.copy("url_post_trigger") # trigger for the url post command
         helper.copy("target_audience") # target audience context for ai generation
+        helper.copy("url_listening") # trigger for the url post command. Can be true or false
         # Handle URL patterns and blacklist separately
         if "url_patterns" in helper.base:
             self["url_patterns"] = list(helper.base["url_patterns"])
@@ -70,6 +69,32 @@ class Config(BaseProxyConfig):
             self["url_blacklist"] = list(helper.base["url_blacklist"])
         else:
             self["url_blacklist"] = [] 
+
+    def should_process_url(self, url: str) -> bool:
+        """
+        Check if a URL should be processed based on patterns and blacklist.
+
+        Args:
+        url (str): The URL to check
+        
+        Returns:
+            bool: True if the URL should be processed, False otherwise
+        """
+        # First check blacklist
+        for blacklist_pattern in self["url_blacklist"]:
+            if re.match(blacklist_pattern, url, re.IGNORECASE):
+                logger.debug(f"URL {url} matches blacklist pattern {blacklist_pattern}")
+                return False
+    
+        # Then check whitelist patterns
+        for pattern in self["url_patterns"]:
+            if re.match(pattern, url, re.IGNORECASE):
+                logger.debug(f"URL {url} matches whitelist pattern {pattern}")
+                return True
+    
+        # If no patterns match, don't process the URL
+        return False
+
 # AIIntegration class
 class AIIntegration:
     """
@@ -671,54 +696,78 @@ def generate_bypass_links(url: str) -> Dict[str, str]:
 
 async def scrape_content(url: str) -> Optional[str]:
     """
-    Asynchronously scrape the web page at the given URL and extract the title,
-    meta description, meta keywords, and the first paragraph.
-
-    Args:
-        url (str): The URL of the web page to scrape.
-
-    Returns:
-        Optional[str]: A formatted string containing the extracted information,
-                       or None if an error occurs.
+    Asynchronously fetch content from a URL using aiohttp.
+    Extracts title, meta description, and other key content using BeautifulSoup.
     """
+    # Define headers to mimic a real browser
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:102.0) Gecko/20100101 Firefox/102.0"
+    }
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
+            async with session.get(url, headers=headers) as response:
                 if response.status != 200:
                     logger.error(f"Error fetching URL {url}: HTTP {response.status}")
                     return None
-                html = await response.text()
+                
+                # Get basic info about the page
+                content_type = response.headers.get('content-type', '')
+                if 'text/html' not in content_type.lower():
+                    return f"URL: {url}\nContent-Type: {content_type}"
 
-        soup = bs(html, 'html.parser')
+                text = await response.text()
+                content_parts = []
 
-        # Get title
-        title = soup.title.string.strip() if soup.title and soup.title.string else ""
+                # Use BeautifulSoup to parse the HTML
+                soup = BeautifulSoup(text, 'html.parser')
 
-        # Get meta description
-        description_tag = soup.find('meta', attrs={'name': 'description'})
-        description = description_tag['content'].strip() if description_tag and 'content' in description_tag.attrs else ""
+                # Extract title
+                title = soup.title.string.strip() if soup.title else ""
+                content_parts.append(f"Title: {title}")
 
-        # Get meta keywords
-        keywords_tag = soup.find('meta', attrs={'name': 'keywords'})
-        keywords = keywords_tag['content'].strip() if keywords_tag and 'content' in keywords_tag.attrs else ""
+                # Extract meta description
+                description = ""
+                meta_desc = soup.find('meta', attrs={'name': 'description'})
+                if meta_desc and 'content' in meta_desc.attrs:
+                    description = meta_desc['content'].strip()
+                content_parts.append(f"Description: {description}")
 
-        # Get first paragraph
-        first_p_tag = soup.find('p')
-        first_paragraph = first_p_tag.get_text(strip=True) if first_p_tag else ""
+                # Extract Open Graph metadata
+                og_title = soup.find('meta', property='og:title')
+                if og_title and 'content' in og_title.attrs:
+                    content_parts.append(f"OG Title: {og_title['content'].strip()}")
 
-        # Combine content
-        content = f"""
-Title: {title}
+                og_desc = soup.find('meta', property='og:description')
+                if og_desc and 'content' in og_desc.attrs:
+                    content_parts.append(f"OG Description: {og_desc['content'].strip()}")
 
-Description: {description}
+                # Extract main content (basic approach)
+                # Remove scripts, styles, and HTML comments
+                for script_or_style in soup(['script', 'style']):
+                    script_or_style.decompose()
 
-Keywords: {keywords}
+                # Extract text from article or main tags if present
+                main_content = ""
+                article = soup.find('article')
+                if article:
+                    main_content = article.get_text(separator=' ', strip=True)
+                else:
+                    main = soup.find('main')
+                    if main:
+                        main_content = main.get_text(separator=' ', strip=True)
+                    else:
+                        main_content = soup.get_text(separator=' ', strip=True)
 
-First Paragraph:
-{first_paragraph}
-"""
+                # Add a snippet of the main content if it exists
+                if main_content:
+                    content_snippet = main_content[:500] + "..." if len(main_content) > 500 else main_content
+                    content_parts.append(f"Content Preview: {content_snippet}")
 
-        return content.strip()
+                # Add the URL
+                content_parts.append(f"URL: {url}")
+
+                # Combine all parts
+                return "\n\n".join(content_parts)
 
     except Exception as e:
         logger.error(f"Error scraping content from {url}: {str(e)}")
@@ -1113,33 +1162,13 @@ class MatrixToDiscourseBot(Plugin):
 
         await self.process_link(evt, message_body)
         
-    def should_process_url(self, url: str) -> bool:
-        """
-        Check if a URL should be processed based on patterns and blacklist.
-
-        Args:
-        url (str): The URL to check
-        
-        Returns:
-            bool: True if the URL should be processed, False otherwise
-        """
-        # First check blacklist
-        for blacklist_pattern in self["url_blacklist"]:
-            if re.match(blacklist_pattern, url, re.IGNORECASE):
-                logger.debug(f"URL {url} matches blacklist pattern {blacklist_pattern}")
-                return False
-    
-        # Then check whitelist patterns
-        for pattern in self["url_patterns"]:
-            if re.match(pattern, url, re.IGNORECASE):
-                logger.debug(f"URL {url} matches whitelist pattern {pattern}")
-                return True
-    
-        # If no patterns match, don't process the URL
-        return False
-
-    # Process links in messages
     async def process_link(self, evt: MessageEvent, message_body: str) -> None:
+        # Check if the sender should be ignored based on the config
+        username = evt.sender.split(":")[0]
+        if "ignored_accounts" in self.config and username in self.config["ignored_accounts"]:
+            self.log.debug(f"Skipping URL processing for ignored user: {username}")
+            return
+    
         urls = extract_urls(message_body)
         username = evt.sender.split(":")[0]  # Extract the username from the sender
         
