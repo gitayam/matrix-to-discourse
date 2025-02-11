@@ -2,7 +2,7 @@
 maubot: 0.1.0
 id: blacklisted.irregularchat.matrix_to_discourse
 version: 1.2.1
-license: GPL-3.0
+license: GPL-3.0-only
 modules:
   - MatrixToDiscourseBot
 main_class: MatrixToDiscourseBot
