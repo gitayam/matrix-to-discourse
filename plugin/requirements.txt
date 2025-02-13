@@ -3,3 +3,4 @@ aiohttp
 pyyaml
 openai
 bs4
+py3-bs4

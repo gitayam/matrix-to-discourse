@@ -20,7 +20,6 @@ from mautrix.types import (
 from maubot import Plugin, MessageEvent
 from maubot.handlers import command, event
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
-from bs4 import BeautifulSoup
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -697,9 +696,8 @@ def generate_bypass_links(url: str) -> Dict[str, str]:
 async def scrape_content(url: str) -> Optional[str]:
     """
     Asynchronously fetch content from a URL using aiohttp.
-    Extracts title, meta description, and other key content using BeautifulSoup.
+    A simple scraper that returns a text snippet of the page instead of parsing HTML with BeautifulSoup.
     """
-    # Define headers to mimic a real browser
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:102.0) Gecko/20100101 Firefox/102.0"
     }
@@ -709,72 +707,16 @@ async def scrape_content(url: str) -> Optional[str]:
                 if response.status != 200:
                     logger.error(f"Error fetching URL {url}: HTTP {response.status}")
                     return None
-                
-                # Get basic info about the page
-                content_type = response.headers.get('content-type', '')
-                if 'text/html' not in content_type.lower():
-                    return f"URL: {url}\nContent-Type: {content_type}"
 
                 text = await response.text()
-                content_parts = []
-
-                # Use BeautifulSoup to parse the HTML
-                soup = BeautifulSoup(text, 'html.parser')
-
-                # Extract title
-                title = soup.title.string.strip() if soup.title else ""
-                content_parts.append(f"Title: {title}")
-
-                # Extract meta description
-                description = ""
-                meta_desc = soup.find('meta', attrs={'name': 'description'})
-                if meta_desc and 'content' in meta_desc.attrs:
-                    description = meta_desc['content'].strip()
-                content_parts.append(f"Description: {description}")
-
-                # Extract Open Graph metadata
-                og_title = soup.find('meta', property='og:title')
-                if og_title and 'content' in og_title.attrs:
-                    content_parts.append(f"OG Title: {og_title['content'].strip()}")
-
-                og_desc = soup.find('meta', property='og:description')
-                if og_desc and 'content' in og_desc.attrs:
-                    content_parts.append(f"OG Description: {og_desc['content'].strip()}")
-
-                # Extract main content (basic approach)
-                # Remove scripts, styles, and HTML comments
-                for script_or_style in soup(['script', 'style']):
-                    script_or_style.decompose()
-
-                # Extract text from article or main tags if present
-                main_content = ""
-                article = soup.find('article')
-                if article:
-                    main_content = article.get_text(separator=' ', strip=True)
-                else:
-                    main = soup.find('main')
-                    if main:
-                        main_content = main.get_text(separator=' ', strip=True)
-                    else:
-                        main_content = soup.get_text(separator=' ', strip=True)
-
-                # Add a snippet of the main content if it exists
-                if main_content:
-                    content_snippet = main_content[:500] + "..." if len(main_content) > 500 else main_content
-                    content_parts.append(f"Content Preview: {content_snippet}")
-
-                # Add the URL
-                content_parts.append(f"URL: {url}")
-
-                # Combine all parts
-                return "\n\n".join(content_parts)
-
+                snippet = text[:500] + "..." if len(text) > 500 else text
+                return f"Content Preview: {snippet}\n\nURL: {url}"
     except Exception as e:
         logger.error(f"Error scraping content from {url}: {str(e)}")
         return None
 
 # Main plugin class
-class MatrixToDiscourseBot(Plugin):
+class main(Plugin):
     async def start(self) -> None:
         await super().start()
         self.config.load_and_update()
@@ -1122,6 +1064,10 @@ class MatrixToDiscourseBot(Plugin):
     # Handle messages with URLs and process them
     @event.on(EventType.ROOM_MESSAGE)
     async def handle_message(self, evt: MessageEvent) -> None:
+        # Only process URLs if url_listening is enabled in the configuration.
+        if not self.config.get("url_listening", False):
+            return
+
         if evt.sender == self.client.mxid:
             return
 

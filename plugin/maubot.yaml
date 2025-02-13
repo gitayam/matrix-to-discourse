@@ -1,18 +1,16 @@
 #maubot.yaml is the configuration file for the Maubot plugin. It contains the settings for the plugin, including the bot's username, password, and the server to connect to. It also contains the settings for the Discourse integration, the AI model, and the triggers for the bot's commands.
 maubot: 0.1.0
-id: scrapetest.irregularchat.matrix_to_discourse
-version: 1.0
+id: com.irregularchat.matrix_to_discourse
+version: 0.1.2.2
 license: GPL-3.0
 modules:
   - MatrixToDiscourseBot
-main_class: MatrixToDiscourseBot
+main_class: main
 database: false
 config: true
 extra_files:
  - base-config.yaml
- - requirements.txt
 dependencies:
   - aiohttp
   - openai
   - pyyaml
-  - bs4
