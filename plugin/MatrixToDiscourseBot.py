@@ -1109,9 +1109,10 @@ class MatrixToDiscourseBot(Plugin):
             post_url = post_url.replace("[", "").replace("]", "")
             bypass_links = generate_bypass_links(url)  # Ensure bypass links are generated
             await evt.reply(
-                f"🔗Summary and bypass links: {title}, {post_url}\n"
-                f"**12ft.io Link:** [12ft.io]({bypass_links['12ft']})\n"
-                f"**Archive.org Link:** [Archive.org]({bypass_links['archive']})"
+                f"🔗 Summary and bypass links:\n\n"
+                f"**Title:** {title}\n\n"
+                f"**Post URL:** {post_url}\n\n"
+                f"**Summary Preview:** {summary[:140]}...\n\n"
             )
         else:
             await evt.reply(f"Failed to create post: {error}")
@@ -1421,11 +1422,11 @@ class MatrixToDiscourseBot(Plugin):
                 posted_link_url = f"{self.config['discourse_base_url']}/tag/posted-link"
                 # post_url should not be markdown
                 post_url = post_url.replace("[", "").replace("]", "")
-                bypass_links = generate_bypass_links(url)  # Ensure bypass links are generated
                 await evt.reply(
-                    f"🔗Summary and bypass links: {title}, {post_url}\n"
-                    f"**12ft.io Link:** [12ft.io]({bypass_links['12ft']})\n"
-                    f"**Archive.org Link:** [Archive.org]({bypass_links['archive']})"
+                    f"🔗 Summary and bypass links:\n\n"
+                    f"**Title:** {title}\n\n"
+                    f"**Post URL:** {post_url}\n\n"
+                    f"{summary[:140]}...\n\n"
                 )
             else:
                 await evt.reply(f"Failed to create post: {error}")
