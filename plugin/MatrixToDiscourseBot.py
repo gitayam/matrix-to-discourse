@@ -150,6 +150,7 @@ class AIIntegration:
             return None
     #generate_links_title
     async def generate_links_title(self, message_body: str) -> Optional[str]:
+        """Create a title focusing on linked content."""
         prompt = f"Create a concise and relevant title for the following content, focusing on the key message and linked content:\n\n{message_body}"
         return await self.generate_title(prompt, use_links_prompt=True)
 
@@ -730,6 +731,8 @@ async def scrape_content(url: str) -> Optional[str]:
             return await scrape_twitter_content(url)
         elif "reddit.com" in url:
             return await scrape_reddit_content(url)
+        elif "linkedin.com" in url:
+            return await scrape_linkedin_content(url)
         else:
             # Fallback to generic scraping
             return await generic_scrape_content(url)
@@ -787,7 +790,154 @@ Replies: {tweet.replyCount}"""
     except Exception as e:
         logger.error(f"Error scraping Twitter content: {str(e)}")
         return None
+async def scrape_linkedin_content(url: str, timeout: int = 10) -> Optional[str]:
+    """
+    Scrape content from a LinkedIn URL using the public API.
+    Supports posts, articles, company updates, and profiles.
+    
+    Args:
+        url (str): The LinkedIn URL to scrape.
+        timeout (int): Request timeout in seconds.
+        
+    Returns:
+        Optional[str]: The formatted content or None on failure.
+    """
+    try:
+        # Extract post ID and content type from various LinkedIn URL formats.
+        post_info = extract_linkedin_post_id(url)
+        if not post_info:
+            logger.error(f"Could not extract post information from URL: {url}")
+            return None
 
+        post_id, content_type = post_info
+
+        # For profiles, return a simplified format.
+        if content_type == 'profiles':
+            return (
+                f"LinkedIn Profile\n"
+                f"Profile ID: {post_id}\n"
+                f"URL: {url}\n\n"
+                f"Note: Due to LinkedIn's privacy restrictions, detailed profile "
+                "information cannot be scraped. Please visit the profile URL directly "
+                "to view the full profile."
+            )
+
+        # Use a configuration dict for API credentials.
+        linkedin_config = {
+            "client_id": "your_client_id",
+            "client_secret": "your_client_secret",
+            "redirect_uri": "your_redirect_uri",
+            "access_token": "your_access_token"
+        }
+
+        api_url = f"https://api.linkedin.com/v2/{content_type}/{post_id}"
+        headers = {
+            "Authorization": f"Bearer {linkedin_config['access_token']}",
+            "X-Restli-Protocol-Version": "2.0.0"
+        }
+
+        # Use a timeout for the request.
+        timeout_obj = aiohttp.ClientTimeout(total=timeout)
+        async with aiohttp.ClientSession(timeout=timeout_obj) as session:
+            async with session.get(api_url, headers=headers) as response:
+                if response.status != 200:
+                    logger.error(f"LinkedIn API error ({response.status}) for URL: {api_url}")
+                    return None
+
+                post_data = await response.json()
+                content = await format_linkedin_content(post_data, content_type)
+                return content
+
+    except aiohttp.ClientError as e:
+        logger.error(f"Network error while scraping LinkedIn content: {e}")
+    except json.JSONDecodeError as e:
+        logger.error(f"Error parsing LinkedIn API response: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error scraping LinkedIn content: {e}")
+    return None
+
+
+def extract_linkedin_post_id(url: str) -> Optional[tuple[str, str]]:
+    """
+    Extract the post ID and content type from various LinkedIn URL formats.
+    Supported formats:
+      - Posts: linkedin.com/posts/{post_id}
+      - Articles: linkedin.com/pulse/{article_id}
+      - Company Updates: linkedin.com/company/{company}/posts/{post_id}
+      - Profiles: linkedin.com/in/{profile_id}
+      
+    Args:
+        url (str): The LinkedIn URL.
+        
+    Returns:
+        Optional[tuple[str, str]]: (post_id, content_type) if a pattern matches; otherwise, None.
+    """
+    try:
+        patterns = {
+            r'linkedin\.com/posts/([a-zA-Z0-9-]+)': 'ugcPosts',
+            r'linkedin\.com/pulse/([a-zA-Z0-9-]+)': 'articles',
+            r'linkedin\.com/company/[^/]+/posts/([a-zA-Z0-9-]+)': 'companyPosts',
+            r'linkedin\.com/in/([a-zA-Z0-9-]+)': 'profiles'
+        }
+
+        # Use re.IGNORECASE for case-insensitive matching.
+        for pattern, content_type in patterns.items():
+            match = re.search(pattern, url, re.IGNORECASE)
+            if match:
+                logger.debug(f"Matched pattern: {pattern} for URL: {url}")
+                return (match.group(1), content_type)
+
+        logger.warning(f"URL format not recognized: {url}")
+    except Exception as e:
+        logger.error(f"Error extracting LinkedIn post ID: {e}")
+    return None
+
+
+async def format_linkedin_content(post_data: dict, content_type: str) -> str:
+    """
+    Format LinkedIn content based on its type.
+    
+    Args:
+        post_data (dict): JSON data returned by the LinkedIn API.
+        content_type (str): Type of content (e.g. 'ugcPosts', 'articles', etc.)
+        
+    Returns:
+        str: A formatted string summarizing the post content.
+    """
+    try:
+        author_name = post_data.get('author', {}).get('name', 'Unknown Author')
+        # Try multiple keys for content.
+        commentary = post_data.get('commentary') or post_data.get('text') or "No content available"
+        created_time = post_data.get('created', {}).get('time', 'Unknown date')
+        social_counts = post_data.get('socialDetail', {}).get('totalSocialActivityCounts', {})
+        reactions = social_counts.get('reactions', 0)
+        comments = social_counts.get('comments', 0)
+
+        base_content = (
+            f"Post by {author_name}:\n"
+            f"{commentary}\n\n"
+            f"Posted: {created_time}\n"
+            f"Reactions: {reactions}\n"
+            f"Comments: {comments}\n"
+        )
+
+        # Handle media attachments if present.
+        media_items = post_data.get('content', {}).get('media', [])
+        if media_items:
+            media_urls = []
+            for item in media_items:
+                original_url = item.get('originalUrl')
+                if original_url:
+                    media_urls.append(original_url)
+            if media_urls:
+                base_content += "\nMedia URLs:\n" + "\n".join(media_urls)
+                
+        return base_content
+
+    except Exception as e:
+        logger.error(f"Error formatting LinkedIn content: {e}")
+        return "Error formatting content"
+    
 async def scrape_reddit_content(url: str) -> Optional[str]:
     """Scrape content from a Reddit URL including post details, media, and metadata."""
     try:
@@ -1243,7 +1393,8 @@ class MatrixToDiscourseBot(Plugin):
         return messages
     # Function to generate title for bypassed links
     async def generate_title_for_bypassed_links(self, message_body: str) -> Optional[str]:
-        return await self.ai_integration.generate_links_title(message_body, use_links_prompt=True)
+        # Remove the use_links_prompt parameter since generate_links_title doesn't accept it
+        return await self.ai_integration.generate_links_title(message_body)
     
     # Function to generate title
     async def generate_title(self, message_body: str) -> Optional[str]:
@@ -1388,10 +1539,10 @@ class MatrixToDiscourseBot(Plugin):
                 summary = "Content could not be scraped or summarized."
 
             # Generate title
-            title = await self.ai_integration.generate_links_title(message_body)
+            title = await self.generate_title_for_bypassed_links(message_body)
             if not title:
                 self.log.info(f"Generating title using URL and domain for: {url}")
-                title = await self.ai_integration.generate_links_title(f"URL: {url}, Domain: {url.split('/')[2]}")
+                title = await self.generate_title_for_bypassed_links(f"URL: {url}, Domain: {url.split('/')[2]}")
                 if not title:
                     title = "Untitled Post"
 
