@@ -24,8 +24,6 @@ from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 # from selenium.webdriver.chrome.options import Options
 # BeautifulSoup4 since maubot image uses alpine linux
 from bs4 import BeautifulSoup
-# for Twitter scraping
-import snscrape.modules.twitter as sntwitter
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -90,13 +88,24 @@ class Config(BaseProxyConfig):
         """
         # First check blacklist
         for blacklist_pattern in self["url_blacklist"]:
-            if re.match(blacklist_pattern, url, re.IGNORECASE):
+            if re.search(blacklist_pattern, url, re.IGNORECASE):
                 logger.debug(f"URL {url} matches blacklist pattern {blacklist_pattern}")
                 return False
-    
+        # To prevent infinite recursion, exclude URLs pointing to the bot's own mediawiki or discourse instances if configured
+        # Exclude URLs pointing to the bot's own mediawiki or discourse instances if configured
+        if 'mediawiki_base_url' in self and self['mediawiki_base_url']:
+            if self['mediawiki_base_url'] in url:
+                logger.debug(f"URL {url} matches mediawiki_base_url {self['mediawiki_base_url']}")
+                return False
+
+        if 'discourse_base_url' in self and self['discourse_base_url']:
+            if self['discourse_base_url'] in url:
+                logger.debug(f"URL {url} matches discourse_base_url {self['discourse_base_url']}")
+                return False
+
         # Then check whitelist patterns
         for pattern in self["url_patterns"]:
-            if re.match(pattern, url, re.IGNORECASE):
+            if re.search(pattern, url, re.IGNORECASE):
                 logger.debug(f"URL {url} matches whitelist pattern {pattern}")
                 return True
     
@@ -546,7 +555,6 @@ class DiscourseAPI:
             "Api-Key": self.config["discourse_api_key"],
             "Api-Username": self.config["discourse_api_username"],
         }
-
         # Extract base URL without tracking or query data
         base_url = re.sub(r'\?.*$', '', url)  # Remove query parameters
         self.log.debug(f"Checking for duplicates of base URL: {base_url}")
@@ -705,7 +713,9 @@ def generate_bypass_links(url: str) -> Dict[str, str]:
 async def scrape_content(url: str) -> Optional[str]:
     """Scrape content from URL using BeautifulSoup or specific APIs for social media."""
     try:
-        if "x.com" in url or "twitter.com" in url:
+        if url.lower().endswith('.pdf'):
+            return await scrape_pdf_content(url)
+        elif "x.com" in url or "twitter.com" in url:
             return await scrape_twitter_content(url)
         elif "reddit.com" in url:
             return await scrape_reddit_content(url)
@@ -719,6 +729,7 @@ async def scrape_content(url: str) -> Optional[str]:
 async def scrape_twitter_content(url: str) -> Optional[str]:
     """Scrape content from a Twitter URL using snscrape."""
     try:
+        import snscrape.modules.twitter as sntwitter
         # Extract tweet ID from URL
         tweet_id = url.split("/status/")[-1].split("?")[0]
         
@@ -905,6 +916,26 @@ Content:
 {content}
 """
             return scraped_content.strip()
+
+async def scrape_pdf_content(url: str) -> Optional[str]:
+    """Scrape the first page text from a PDF URL."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    logger.error(f"Failed to fetch PDF: {url}, status: {response.status}")
+                    return None
+                data = await response.read()
+
+        from pdfminer.high_level import extract_text
+        from io import BytesIO
+        pdf_file = BytesIO(data)
+        # Extract text from the first page only
+        text = extract_text(pdf_file, page_numbers=[0])
+        return text.strip() if text else "No text found in PDF first page."
+    except Exception as e:
+        logger.error(f"Error scraping PDF from {url}: {str(e)}")
+        return None
 
 # Main plugin class
 class MatrixToDiscourseBot(Plugin):
@@ -1315,7 +1346,6 @@ class MatrixToDiscourseBot(Plugin):
 
         if not urls_to_process:
             self.log.debug("No URLs matched the configured patterns or all URLs were blacklisted")
-            await evt.reply("No valid URLs found to process.")
             return
 
         for url in urls_to_process:
