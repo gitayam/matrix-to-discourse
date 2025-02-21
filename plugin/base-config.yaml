@@ -12,6 +12,9 @@ discourse_api_key: "discourse_api_key"
 discourse_api_username: "discourse_api_username"
 discourse_base_url: "https://discourse.example.com"
 
+###### MediaWiki Configuration ######
+mediawiki_base_url: "https://wikipedia.org"
+
 # To get your category ID, go to https://discourse.example.com/c/your-category-name.json
 matrix_to_discourse_topic:
   "!roomID1:server": "topic_id_1"
@@ -95,6 +98,8 @@ google:
 #   - https?://.*\.(pdf)$                      # PDFs
 #   - https?://.*\.(jpg|jpeg|png|gif|webp)$    # Images
 
+# Default is false, set to true to enable URL listening. furl will still work even if this is false.
+url_listening: false
 url_patterns:
   - https?://.*  # Match all URLs
 # Match URLs regular expressions that should not be posted
