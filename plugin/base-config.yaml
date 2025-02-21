@@ -105,7 +105,6 @@ url_patterns:
 # Match URLs regular expressions that should not be posted
 # Bot is not very good at handling social media or documents
 url_blacklist:
-  - https?://.*\.pdf$
   - https?://.*\.doc$
   - https?://.*\.docx$
   - https?://.*\.ppt$
@@ -117,4 +116,20 @@ url_blacklist:
   - https?://(www\.)?x\.com/.*
   - https?://(www\.)?instagram\.com/.*
   - https?://(www\.)?tiktok\.com/.*
+  - https?://(www\.)?facebook\.com/.*
+  - https://u\.pcloud\.link/publink/show\?code=[a-zA-Z0-9]+
+  - https?://(www\.)?mega\.nz/.*
+  - https?://(www\.)?mediafire\.com/.*
+  - https?://(www\.)?4shared\.com/.*
+  - https?://(www\.)?dropbox\.com/.*
+  - https?://(www\.)?box\.com/.*
+  - https?://(www\.)?onedrive\.com/.*
+  - https?://(www\.)?google\.com/drive/u/0/files/.*
+  - https?://(www\.)?drive\.google\.com/.*
+  - https?://(www\.)?drive\.microsoft\.com/.*
+  - https?://(www\.)?drive\.apple\.com/.*
+  - https?://(www\.)?drive\.amazon\.com/.*
+  - https?://(www\.)?drive\.yandex\.com/.*
+  - https?://(www\.)?drive\.yahoo\.com/.*
+
   
