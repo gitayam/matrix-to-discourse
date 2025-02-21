@@ -1383,7 +1383,10 @@ class MatrixToDiscourseBot(Plugin):
 
             # Generate tags
             tags = await self.ai_integration.generate_tags(content)
-            # add posted-link to tags if it's not already in the list
+            # Log the generated tags for debugging
+            self.log.debug(f"Generated tags: {tags}")
+            
+            # Ensure 'posted-link' is in the tags
             if "posted-link" not in tags:
                 tags.append("posted-link")
             if not tags:
@@ -1395,11 +1398,9 @@ class MatrixToDiscourseBot(Plugin):
             # Prepare message body
             post_body = (
                 f"{summary}\n\n"
-                # original link should be full url
+                f"**12ft.io Link:** {bypass_links['12ft']}\n"
+                f"**Archive.org Link:** {bypass_links['archive']}\n\n"
                 f"**Original Link:** <{url}>\n\n"
-                # bypass links should be markdown links with title of archive services and title of the link
-                f"**12ft.io Link:** [12ft.io]({bypass_links['12ft']})\n"
-                f"**Archive.org Link:** [Archive.org]({bypass_links['archive']})\n\n"
                 f"User Message: {message_body}\n\n"
                 f"for more on see the [post on bypassing methods](https://forum.irregularchat.com/t/bypass-links-and-methods/98?u=sac)"
             )
