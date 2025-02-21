@@ -7,6 +7,7 @@ import logging
 import argparse
 from datetime import datetime, timedelta, timezone
 from typing import Type, Dict, List, Optional
+from urllib.parse import urlparse
 
 from mautrix.client import Client
 from mautrix.types import (
@@ -101,6 +102,16 @@ class Config(BaseProxyConfig):
         if 'discourse_base_url' in self and self['discourse_base_url']:
             if self['discourse_base_url'] in url:
                 logger.debug(f"URL {url} matches discourse_base_url {self['discourse_base_url']}")
+                return False
+
+            # Extract base domain from discourse_base_url
+            # many services such as notepads, and other links are typical in the communtiy chats but create redudant posts in discourse
+            parsed_url = urlparse(self['discourse_base_url'])
+            base_domain = parsed_url.netloc #netloc is the network location of the URL
+
+            # Add base domain and all subdomains to the blacklist
+            if base_domain in url:
+                logger.debug(f"URL {url} matches base domain {base_domain} of discourse_base_url")
                 return False
 
         # Then check whitelist patterns
@@ -920,13 +931,17 @@ Content:
 async def scrape_pdf_content(url: str) -> Optional[str]:
     """Scrape the first page text from a PDF URL."""
     try:
+        # Clean the URL by removing the fragment identifier
+        clean_url = url.split('#')[0]
+
         async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
+            async with session.get(clean_url) as response:
                 if response.status != 200:
-                    logger.error(f"Failed to fetch PDF: {url}, status: {response.status}")
+                    logger.error(f"Failed to fetch PDF: {clean_url}, status: {response.status}")
                     return None
                 data = await response.read()
 
+        # Ensure pdfminer.six is installed
         from pdfminer.high_level import extract_text
         from io import BytesIO
         pdf_file = BytesIO(data)
@@ -1109,9 +1124,8 @@ class MatrixToDiscourseBot(Plugin):
             post_url = post_url.replace("[", "").replace("]", "")
             bypass_links = generate_bypass_links(url)  # Ensure bypass links are generated
             await evt.reply(
-                f"🔗 Summary and bypass links:\n\n"
-                f"**Title:** {title}\n\n"
-                f"**Post URL:** {post_url}\n\n"
+                f"🔗 {title}\n\n"
+                f"**Forum Post URL:** {post_url}\n\n"
                 f"**Summary Preview:** {summary[:140]}...\n\n"
             )
         else:
@@ -1424,9 +1438,8 @@ class MatrixToDiscourseBot(Plugin):
                 # post_url should not be markdown
                 post_url = post_url.replace("[", "").replace("]", "")
                 await evt.reply(
-                    f"🔗 Summary and bypass links:\n\n"
-                    f"**Title:** {title}\n\n"
-                    f"**Post URL:** {post_url}\n\n"
+                    f"🔗 {title}\n\n"
+                    f"**Forum Post URL:** {post_url}\n\n"
                     f"{summary[:140]}...\n\n"
                 )
             else:
