@@ -22,7 +22,8 @@ from maubot.handlers import command, event
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 # from selenium import webdriver
 # from selenium.webdriver.chrome.options import Options
-
+# BeautifulSoup4 since maubot image uses alpine linux
+from bs4 import BeautifulSoup
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ class Config(BaseProxyConfig):
         helper.copy("search_trigger") # trigger for the search command
         helper.copy("post_trigger") # trigger for the post command
         helper.copy("help_trigger") # trigger for the help command
+        helper.copy("url_listening") # trigger for the url listening command
         helper.copy("url_post_trigger") # trigger for the url post command
         helper.copy("target_audience") # target audience context for ai generation
         # Handle URL patterns and blacklist separately
@@ -69,6 +71,36 @@ class Config(BaseProxyConfig):
             self["url_blacklist"] = list(helper.base["url_blacklist"])
         else:
             self["url_blacklist"] = [] 
+
+        # --- New configuration options for MediaWiki ---
+        helper.copy("mediawiki_base_url")  # Base URL for the community MediaWiki wiki
+        helper.copy("mediawiki_search_trigger")  # Command trigger for MediaWiki wiki search
+
+    def should_process_url(self, url: str) -> bool:
+        """
+        Check if a URL should be processed based on patterns and blacklist.
+
+        Args:
+        url (str): The URL to check
+        
+        Returns:
+            bool: True if the URL should be processed, False otherwise
+        """
+        # First check blacklist
+        for blacklist_pattern in self["url_blacklist"]:
+            if re.match(blacklist_pattern, url, re.IGNORECASE):
+                logger.debug(f"URL {url} matches blacklist pattern {blacklist_pattern}")
+                return False
+    
+        # Then check whitelist patterns
+        for pattern in self["url_patterns"]:
+            if re.match(pattern, url, re.IGNORECASE):
+                logger.debug(f"URL {url} matches whitelist pattern {pattern}")
+                return True
+    
+        # If no patterns match, don't process the URL
+        return False
+
 # AIIntegration class
 class AIIntegration:
     """
@@ -669,59 +701,87 @@ def generate_bypass_links(url: str) -> Dict[str, str]:
     return links
 
 async def scrape_content(url: str) -> Optional[str]:
-    #for testing just output the url
-    return url
-    # Scrape the content of the URL for title, description, and keywords, seo using selenium
-#     chrome_options = Options()
-#     chrome_options.add_argument('--headless')
-#     chrome_options.add_argument('--no-sandbox')
-#     chrome_options.add_argument('--disable-dev-shm-usage')
+    """Scrape content from URL using BeautifulSoup or specific APIs for social media."""
+    try:
+        if "x.com" in url or "twitter.com" in url:
+            return await scrape_twitter_content(url)
+        elif "reddit.com" in url:
+            return await scrape_reddit_content(url)
+        else:
+            # Fallback to generic scraping
+            return await generic_scrape_content(url)
+    except Exception as e:
+        logger.error(f"Error scraping content from {url}: {str(e)}")
+        return None
 
-#     driver = None
-#     try:
-#         driver = webdriver.Chrome(options=chrome_options)
-#         driver.get(url)
-        
-#         # Get title
-#         title = driver.title
+async def scrape_twitter_content(url: str) -> Optional[str]:
+    """Scrape content from a Twitter URL."""
+    # Implement Twitter API call or HTML parsing here
+    # Example: Use Twitter API to fetch tweet details
+    # This requires Twitter API credentials and setup
+    return "Twitter content scraping not implemented."
 
-#         # Get meta description
-#         description = ""
-#         desc_elem = driver.find_elements("xpath", "//meta[@name='description']")
-#         if desc_elem:
-#             description = desc_elem[0].get_attribute("content")
+async def scrape_reddit_content(url: str) -> Optional[str]:
+    """Scrape content from a Reddit URL."""
+    try:
+        headers = {"User-Agent": "MatrixToDiscourseBot/1.0"}
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.get(url + ".json") as response:
+                if response.status == 200:
+                    data = await response.json()
+                    post_data = data[0]["data"]["children"][0]["data"]
+                    title = post_data.get("title", "No Title")
+                    selftext = post_data.get("selftext", "No Content")
+                    return f"Title: {title}\n\nContent: {selftext}"
+                else:
+                    logger.error(f"Failed to fetch Reddit content: {response.status}")
+                    return None
+    except Exception as e:
+        logger.error(f"Error scraping Reddit content: {str(e)}")
+        return None
 
-#         # Get meta keywords
-#         keywords = ""
-#         keywords_elem = driver.find_elements("xpath", "//meta[@name='keywords']")
-#         if keywords_elem:
-#             keywords = keywords_elem[0].get_attribute("content")
+async def generic_scrape_content(url: str) -> Optional[str]:
+    """Generic scraping for non-social media URLs."""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            if response.status != 200:
+                logger.error(f"Failed to fetch URL: {url}, status: {response.status}")
+                return None
+            
+            html = await response.text()
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            # Get title
+            title = soup.title.string if soup.title else ""
+            
+            # Get meta description
+            description = ""
+            meta_desc = soup.find("meta", {"name": "description"})
+            if meta_desc:
+                description = meta_desc.get("content", "")
+            
+            # Get meta keywords
+            keywords = ""
+            meta_keywords = soup.find("meta", {"name": "keywords"})
+            if meta_keywords:
+                keywords = meta_keywords.get("content", "")
+            
+            # Get main content (first few paragraphs)
+            paragraphs = soup.find_all("p")[:3]  # Get first 3 paragraphs
+            content = "\n".join(p.get_text().strip() for p in paragraphs)
+            
+            # Combine all content
+            scraped_content = f"""
+Title: {title}
 
-#         # Get paragraphs
-#         paragraphs = driver.find_elements("xpath", "//p")
-#         first_paragraph = paragraphs[0].text if paragraphs else ""
-#         last_paragraph = paragraphs[-1].text if paragraphs else ""
+Description: {description}
 
-#         # Combine content
-#         content = f"""
-# Title: {title}
+Keywords: {keywords}
 
-# Description: {description}
-
-# Keywords: {keywords}
-
-# First Paragraph:
-# {first_paragraph}# """
-#         return content.strip()
-
-#     except Exception as e:
-#         logger.error(f"Error scraping content: {str(e)}")
-#         return None
-
-#     finally:
-#         if driver:
-#             driver.quit()
-
+Content:
+{content}
+"""
+            return scraped_content.strip()
 
 # Main plugin class
 class MatrixToDiscourseBot(Plugin):
@@ -1023,62 +1083,73 @@ class MatrixToDiscourseBot(Plugin):
 
     async def handle_search_discourse(self, evt: MessageEvent, query: str) -> None:
         self.log.info(f"Command !{self.config['search_trigger']} triggered.")
-        await evt.reply("Searching the forum...")
+        await evt.reply("Searching the forum and wiki...")
 
         try:
+            # Forum search via Discourse API
             search_results = await self.discourse_api.search_discourse(query)
+            
+            # Perform MediaWiki search
+            mediawiki_base_url = self.config.get("mediawiki_base_url", "")
+            wiki_results = await self.search_mediawiki(query)
+            top_wiki = wiki_results[:2] if wiki_results else []
+            
             if search_results is not None:
                 if search_results:
-                    # Process and display search results
-                    # Safely get keys with default values
+                    # Process forum results
                     for result in search_results:
                         result["views"] = result.get("views", 0)
                         result["created_at"] = result.get("created_at", "1970-01-01T00:00:00Z")
-
-                    # Sort search results by created_at for most recent and by views for most seen
-                    sorted_by_recent = sorted(
-                        search_results, key=lambda x: x["created_at"], reverse=True
-                    )
+                    
+                    # Sort forum posts by views
                     sorted_by_views = sorted(search_results, key=lambda x: x["views"], reverse=True)
-
-                    # Select top 2 most recent and top 3 most seen
-                    top_recent = sorted_by_recent[:2]
                     top_seen = sorted_by_views[:3]
-
-                    def format_results(results):
+                    
+                    def format_forum_results(results):
                         return "\n".join(
                             [
                                 f"* [{result['title']}]({self.config['discourse_base_url']}/t/{result['slug']}/{result['id']})"
                                 for result in results
                             ]
                         )
-
+                    
+                    def format_wiki_results(results):
+                        return "\n".join(
+                            [
+                                f"* [{result['title']}]({mediawiki_base_url}/?curid={result['pageid']})"
+                                for result in results
+                            ]
+                        )
+                    
                     result_msg = (
-                        "**Top 2 Most Recent:**\n"
-                        + format_results(top_recent)
-                        + "\n\n**Top 3 Most Seen:**\n"
-                        + format_results(top_seen)
+                        "**Wiki Results:**\n"
+                        + format_wiki_results(top_wiki)
+                        + "\n\n**Top 3 Most Seen (Forum):**\n"
+                        + format_forum_results(top_seen)
                     )
-
                     await evt.reply(f"Search results:\n{result_msg}")
                 else:
-                    await evt.reply("No results found.")
+                    await evt.reply("No forum posts found for the query.")
             else:
-                await evt.reply("Failed to perform search.")
+                await evt.reply("Failed to perform forum search.")
         except Exception as e:
             self.log.error(f"Error processing !{self.config['search_trigger']} command: {e}")
             await evt.reply(f"An error occurred: {e}")
 
-    # Handle messages with URLs and process them
+    # Handle messages with URLs and process them if url_listening is enabled.
     @event.on(EventType.ROOM_MESSAGE)
     async def handle_message(self, evt: MessageEvent) -> None:
+        # If URL listening is disabled, don't process URL patterns.
+        if not self.config.get("url_listening", False):
+            return
+
         if evt.sender == self.client.mxid:
             return
 
         if evt.content.msgtype != MessageType.TEXT:
             return
 
-        # Extract URLs from the message body
+        # Extract URLs from the message body.
         message_body = evt.content.body
         urls = extract_urls(message_body)
         if urls:
@@ -1112,32 +1183,6 @@ class MatrixToDiscourseBot(Plugin):
 
         await self.process_link(evt, message_body)
         
-    def should_process_url(self, url: str) -> bool:
-        """
-        Check if a URL should be processed based on patterns and blacklist.
-
-        Args:
-        url (str): The URL to check
-        
-        Returns:
-            bool: True if the URL should be processed, False otherwise
-        """
-        # First check blacklist
-        for blacklist_pattern in self["url_blacklist"]:
-            if re.match(blacklist_pattern, url, re.IGNORECASE):
-                logger.debug(f"URL {url} matches blacklist pattern {blacklist_pattern}")
-                return False
-    
-        # Then check whitelist patterns
-        for pattern in self["url_patterns"]:
-            if re.match(pattern, url, re.IGNORECASE):
-                logger.debug(f"URL {url} matches whitelist pattern {pattern}")
-                return True
-    
-        # If no patterns match, don't process the URL
-        return False
-
-    # Process links in messages
     async def process_link(self, evt: MessageEvent, message_body: str) -> None:
         urls = extract_urls(message_body)
         username = evt.sender.split(":")[0]  # Extract the username from the sender
@@ -1221,3 +1266,57 @@ class MatrixToDiscourseBot(Plugin):
                 await evt.reply(f"🔗Forum post created with bypass links: {title}, {post_url}")
             else:
                 await evt.reply(f"Failed to create post: {error}")
+
+    async def search_mediawiki(self, query: str) -> Optional[List[Dict]]:
+        """
+        Search the MediaWiki API using the configured base URL.
+        Tries both /w/api.php and /api.php, returning a list of search result dictionaries or None on failure.
+        """
+        mediawiki_base_url = self.config.get("mediawiki_base_url", None)
+        if not mediawiki_base_url:
+            self.log.error("MediaWiki base URL is not configured.")
+            return None
+
+        # Prepare candidate endpoint URLs.
+        candidate_urls = []
+        if "api.php" in mediawiki_base_url:
+            candidate_urls.append(mediawiki_base_url)
+        else:
+            if mediawiki_base_url.endswith("/"):
+                candidate_urls.append(mediawiki_base_url + "w/api.php")
+                candidate_urls.append(mediawiki_base_url + "api.php")
+            else:
+                candidate_urls.append(mediawiki_base_url + "/w/api.php")
+                candidate_urls.append(mediawiki_base_url + "/api.php")
+        
+        params = {
+            "action": "query",
+            "list": "search",
+            "srsearch": query,
+            "format": "json"
+        }
+        headers = {
+            "User-Agent": "MatrixToDiscourseBot/1.0"
+        }
+        
+        for candidate_url in candidate_urls:
+            self.log.debug(f"Trying MediaWiki API candidate URL: {candidate_url} with params: {params}")
+            try:
+                async with aiohttp.ClientSession(headers=headers) as session:
+                    async with session.get(candidate_url, params=params) as response:
+                        if response.status == 200:
+                            resp_json = await response.json()
+                            self.log.debug(f"Candidate URL {candidate_url} returned: {resp_json}")
+                            # Check if the response has the expected structure.
+                            if "query" in resp_json and "search" in resp_json["query"]:
+                                return resp_json["query"]["search"]
+                            else:
+                                self.log.debug(f"Candidate URL {candidate_url} did not return expected keys: {resp_json}")
+                        else:
+                            body = await response.text()
+                            self.log.debug(f"Candidate URL {candidate_url} failed with status: {response.status} and body: {body}")
+            except Exception as e:
+                self.log.error(f"Error searching MediaWiki at candidate URL {candidate_url}: {e}")
+        
+        self.log.error("All candidate URLs failed for MediaWiki search.")
+        return None
