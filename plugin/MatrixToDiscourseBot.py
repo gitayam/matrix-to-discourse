@@ -767,22 +767,100 @@ Replies: {tweet.replyCount}"""
         return None
 
 async def scrape_reddit_content(url: str) -> Optional[str]:
-    """Scrape content from a Reddit URL."""
+    """Scrape content from a Reddit URL including post details, media, and metadata."""
     try:
+        # Extract post ID from various Reddit URL formats
+        post_id = extract_reddit_post_id(url)
+        if not post_id:
+            logger.error(f"Could not extract post ID from URL: {url}")
+            return None
+
         headers = {"User-Agent": "MatrixToDiscourseBot/1.0"}
+        api_url = f"https://api.reddit.com/api/info/?id=t3_{post_id}"
+        
         async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(url + ".json") as response:
-                if response.status == 200:
-                    data = await response.json()
-                    post_data = data[0]["data"]["children"][0]["data"]
-                    title = post_data.get("title", "No Title")
-                    selftext = post_data.get("selftext", "No Content")
-                    return f"Title: {title}\n\nContent: {selftext}"
-                else:
+            async with session.get(api_url) as response:
+                if response.status != 200:
                     logger.error(f"Failed to fetch Reddit content: {response.status}")
                     return None
+
+                try:
+                    data = await response.json()
+                except json.JSONDecodeError as e:
+                    logger.error(f"Error decoding Reddit response: {e}")
+                    return None
+
+                if not data.get('data', {}).get('children'):
+                    logger.error("No data found for Reddit post")
+                    return None
+                
+                post_data = data['data']['children'][0]['data']
+                
+                # Build formatted content with comprehensive post information
+                content_parts = []
+                
+                # Title and basic info
+                content_parts.append(f"Title: {post_data.get('title', 'No Title')}")
+                content_parts.append(f"Author: u/{post_data.get('author', '[deleted]')}")
+                content_parts.append(f"Subreddit: r/{post_data.get('subreddit', 'unknown')}")
+                
+                # Post statistics
+                stats = (
+                    f"Score: {post_data.get('score', 0)} | "
+                    f"Upvote Ratio: {post_data.get('upvote_ratio', 0) * 100:.0f}% | "
+                    f"Comments: {post_data.get('num_comments', 0)}"
+                )
+                content_parts.append(stats)
+                
+                # Main content
+                if post_data.get('selftext'):
+                    content_parts.append("\nContent:")
+                    content_parts.append(post_data['selftext'])
+                
+                # Handle media content
+                if post_data.get('is_video') and post_data.get('media', {}).get('reddit_video'):
+                    content_parts.append("\nVideo URL:")
+                    content_parts.append(post_data['media']['reddit_video']['fallback_url'])
+                
+                if post_data.get('url') and post_data.get('post_hint') == 'image':
+                    content_parts.append("\nImage URL:")
+                    content_parts.append(post_data['url'])
+                
+                # Handle crosspost
+                if post_data.get('crosspost_parent_list'):
+                    crosspost = post_data['crosspost_parent_list'][0]
+                    content_parts.append("\nCrossposted from:")
+                    content_parts.append(f"r/{crosspost.get('subreddit')} - {crosspost.get('title')}")
+                
+                # Handle external links
+                if post_data.get('url') and not post_data.get('is_self'):
+                    content_parts.append("\nExternal Link:")
+                    content_parts.append(post_data['url'])
+                
+                return "\n".join(content_parts)
     except Exception as e:
         logger.error(f"Error scraping Reddit content: {str(e)}")
+        return None
+
+def extract_reddit_post_id(url: str) -> Optional[str]:
+    """Extract post ID from various Reddit URL formats."""
+    try:
+        # Handle various Reddit URL formats
+        patterns = [
+            r'reddit\.com/r/\w+/comments/(\w+)',  # Standard format
+            r'redd\.it/(\w+)',                    # Short format
+            r'reddit\.com/comments/(\w+)',        # Direct comment link
+            r'reddit\.com/\w+/(\w+)'              # Other variants
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+        logger.error(f"No matching pattern found for URL: {url}")
+        return None
+    except Exception as e:
+        logger.error(f"Error extracting Reddit post ID: {str(e)}")
         return None
 
 async def generic_scrape_content(url: str) -> Optional[str]:
