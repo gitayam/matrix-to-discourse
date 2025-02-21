@@ -24,6 +24,8 @@ from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 # from selenium.webdriver.chrome.options import Options
 # BeautifulSoup4 since maubot image uses alpine linux
 from bs4 import BeautifulSoup
+# for Twitter scraping
+import snscrape.modules.twitter as sntwitter
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -715,11 +717,54 @@ async def scrape_content(url: str) -> Optional[str]:
         return None
 
 async def scrape_twitter_content(url: str) -> Optional[str]:
-    """Scrape content from a Twitter URL."""
-    # Implement Twitter API call or HTML parsing here
-    # Example: Use Twitter API to fetch tweet details
-    # This requires Twitter API credentials and setup
-    return "Twitter content scraping not implemented."
+    """Scrape content from a Twitter URL using snscrape."""
+    try:
+        # Extract tweet ID from URL
+        tweet_id = url.split("/status/")[-1].split("?")[0]
+        
+        # Create scraper instance and get tweet
+        scraper = sntwitter.TwitterTweetScraper(tweet_id)
+        tweet = None
+        
+        # Get the tweet data
+        for tweet_data in scraper.get_items():
+            tweet = tweet_data
+            break  # We only need the first (and should be only) tweet
+            
+        if not tweet:
+            logger.error(f"Could not find tweet with ID: {tweet_id}")
+            return None
+            
+        # Format the tweet content
+        content = f"""Tweet by @{tweet.user.username}:
+{tweet.rawContent}
+
+Posted: {tweet.date}
+Likes: {tweet.likeCount}
+Retweets: {tweet.retweetCount}
+Replies: {tweet.replyCount}"""
+
+        # Add quote tweet content if present
+        if tweet.quotedTweet:
+            content += f"\n\nQuoted Tweet by @{tweet.quotedTweet.user.username}:\n{tweet.quotedTweet.rawContent}"
+            
+        # Add media information if present
+        if tweet.media:
+            media_urls = []
+            for media in tweet.media:
+                if hasattr(media, 'fullUrl'):
+                    media_urls.append(media.fullUrl)
+                elif hasattr(media, 'url'):
+                    media_urls.append(media.url)
+            
+            if media_urls:
+                content += "\n\nMedia URLs:\n" + "\n".join(media_urls)
+        
+        return content
+        
+    except Exception as e:
+        logger.error(f"Error scraping Twitter content: {str(e)}")
+        return None
 
 async def scrape_reddit_content(url: str) -> Optional[str]:
     """Scrape content from a Reddit URL."""
