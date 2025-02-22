@@ -1276,7 +1276,7 @@ class MatrixToDiscourseBot(Plugin):
             await evt.reply(
                 f"🔗 {title}\n\n"
                 f"**Forum Post URL:** {post_url}\n\n"
-                f"**Summary Preview:** {summary[:140]}...\n\n"
+                f"**Summary Preview:** {summary[:self.config['summary_length_in_characters']]}...\n\n"
             )
         else:
             await evt.reply(f"Failed to create post: {error}")
@@ -1591,7 +1591,7 @@ class MatrixToDiscourseBot(Plugin):
                 await evt.reply(
                     f"🔗 {title}\n\n"
                     f"**Forum Post URL:** {post_url}\n\n"
-                    f"{summary[:140]}...\n\n"
+                    f"{summary[:self.config['summary_length_in_characters']]}...\n\n"
                 )
             else:
                 await evt.reply(f"Failed to create post: {error}")

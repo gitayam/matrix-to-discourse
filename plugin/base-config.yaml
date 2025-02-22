@@ -100,6 +100,7 @@ google:
 
 # Default is false, set to true to enable URL listening. furl will still work even if this is false.
 url_listening: false
+summary_length_in_characters: 140
 url_patterns:
   - https?://.*  # Match all URLs
 # Match URLs regular expressions that should not be posted
