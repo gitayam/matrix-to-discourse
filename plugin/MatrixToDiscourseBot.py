@@ -1281,116 +1281,140 @@ class MatrixToDiscourseBot(Plugin):
         else:
             await evt.reply(f"Failed to create post: {error}")
 
-    # Fetch messages by number
     async def fetch_messages_by_number(self, evt: MessageEvent, number: int) -> List[MessageEvent]:
+        """
+        Fetch up to `number` messages from this room (excluding the bot's own messages).
+        Returns a list of MessageEvent objects from newest to oldest.
+        """
         messages = []
-        prev_batch = None  # Initialize with None or a valid sync token
-        self.log.info(f"Using prev_batch token: {prev_batch}")
+        last_token: Optional[str] = None
+        limit = 100  # how many events to fetch per call
 
-        # Perform an initial sync to get the latest sync token
-        try:
-            sync_response = await self.client.sync(since=prev_batch)
-            prev_batch = sync_response['next_batch']
-        except Exception as e:
-            self.log.error(f"Error during sync: {e}")
-            return messages
+        self.log.info(f"Fetching last {number} messages in room {evt.room_id}...")
 
         while len(messages) < number:
             try:
-                response = await self.client.get_context(
+                chunk = await self.client.get_room_messages(
                     room_id=evt.room_id,
-                    from_token=prev_batch,
+                    from_token=last_token,
                     direction=PaginationDirection.BACKWARD,
-                    limit=100
+                    limit=limit
                 )
             except Exception as e:
-                self.log.error(f"Error fetching messages: {e}")
+                self.log.error(f"Error in get_room_messages: {e}")
                 break
 
-            # Log the entire response for debugging
-            self.log.debug(f"Response: {response}")
+            if not chunk.chunk:
+                break
 
-            # Inspect the response to find the correct attribute
-            events = response.events  # Adjust this line based on the actual attribute name
-            if not events:
-                break  # No more messages
-            for event in events:
+            for event in chunk.chunk:
                 if event.type == EventType.ROOM_MESSAGE and event.sender != self.client.mxid:
                     messages.append(event)
                     if len(messages) >= number:
                         break
 
-            # Handle missing 'end' token
-            if hasattr(response, 'end'):
-                prev_batch = response.end
-            else:
-                self.log.warning("No 'end' token in response, stopping pagination.")
+            if len(chunk.chunk) < limit or not chunk.end:
                 break
+
+            last_token = chunk.end
 
         return messages[:number]
 
-    # Fetch messages by timeframe
     async def fetch_messages_by_time(self, evt: MessageEvent, time_delta: timedelta) -> List[MessageEvent]:
+        """
+        Fetch all messages sent within the last `time_delta` (excluding bot's own).
+        Returns messages from newest to oldest that fall within the timeframe.
+        """
         messages = []
-        prev_batch = None  # Initialize with None or a valid sync token
-        end_time = datetime.utcnow() - time_delta
-        max_retries = 3
-        retry_delay = 5  # seconds
+        last_token: Optional[str] = None
+        limit = 100
+        cutoff_ms = (datetime.now(tz=timezone.utc) - time_delta).timestamp() * 1000
 
-        # Perform an initial sync to get the latest sync token
-        try:
-            sync_response = await self.client.sync(since=prev_batch)
-            prev_batch = sync_response['next_batch']
-        except Exception as e:
-            self.log.error(f"Error during sync: {e}")
-            return messages
+        self.log.info(f"Fetching messages in the last {time_delta} from room {evt.room_id}...")
 
         while True:
-            for attempt in range(max_retries):
-                try:
-                    # Use the correct method to fetch messages
-                    response = await self.client.get_context(
-                        room_id=evt.room_id,
-                        from_token=prev_batch,
-                        direction=PaginationDirection.BACKWARD,
-                        limit=100
-                    )
-                    break  # Exit retry loop if successful
-                except Exception as e:
-                    self.log.error(f"Error fetching messages: {e}")
-                    if "504" in str(e):
-                        self.log.warning(f"504 Gateway Timeout encountered. Retrying in {retry_delay} seconds...")
-                        await asyncio.sleep(retry_delay)
-                    else:
-                        return messages  # Exit if it's not a 504 error
+            try:
+                chunk = await self.client.get_room_messages(
+                    room_id=evt.room_id,
+                    from_token=last_token,
+                    direction=PaginationDirection.BACKWARD,
+                    limit=limit
+                )
+            except Exception as e:
+                self.log.error(f"Error in get_room_messages: {e}")
+                break
 
-            else:
-                self.log.error("Max retries reached. Exiting message fetch.")
-                return messages
+            if not chunk.chunk:
+                break
 
-            # Log the entire response for debugging
-            self.log.debug(f"Response: {response}")
-
-            # Use the correct attribute to access the messages
-            events = response.events  # Adjust this line based on the actual attribute name
-            if not events:
-                break  # No more messages
-
-            for event in events:
+            for event in chunk.chunk:
                 if event.type == EventType.ROOM_MESSAGE and event.sender != self.client.mxid:
-                    event_time = datetime.fromtimestamp(event.server_timestamp / 1000, timezone.utc)
-                    if event_time < end_time:
+                    if event.server_timestamp < cutoff_ms:
                         return messages
                     messages.append(event)
 
-            # Handle missing 'end' token
-            if hasattr(response, 'end'):
-                prev_batch = response.end
-            else:
-                self.log.warning("No 'end' token in response, stopping pagination.")
+            if len(chunk.chunk) < limit or not chunk.end:
                 break
 
+            last_token = chunk.end
+
         return messages
+
+    async def summarize_messages_as_post(self, evt: MessageEvent,
+                                         number: Optional[int] = None,
+                                         hours: Optional[int] = None,
+                                         minutes: Optional[int] = None,
+                                         days: Optional[int] = None) -> Optional[str]:
+        """
+        Summarize either the last N messages or messages from a timeframe.
+        If no arguments are provided, fallback to the replied-to message.
+        """
+        if (number and (hours or minutes or days)):
+            await evt.reply("Please specify either a number of messages (-n) or a timeframe (-h/-m/-d), not both.")
+            return None
+        if not (number or hours or minutes or days or evt.content.get_reply_to()):
+            await evt.reply("Please reply to a message or specify a number of messages (-n) or timeframe (-h/-m/-d).")
+            return None
+
+        messages: List[MessageEvent] = []
+        if number:
+            messages = await self.fetch_messages_by_number(evt, number)
+            if not messages:
+                await evt.reply("No messages found for that count.")
+                return None
+            if len(messages) < number:
+                await evt.reply(f"Only found {len(messages)} messages to summarize.")
+        elif (hours or minutes or days):
+            total_seconds = (days or 0) * 86400 + (hours or 0) * 3600 + (minutes or 0) * 60
+            time_delta = timedelta(seconds=total_seconds)
+            messages = await self.fetch_messages_by_time(evt, time_delta)
+            if not messages:
+                await evt.reply("No messages found in the specified timeframe.")
+                return None
+        else:
+            replied_id = evt.content.get_reply_to()
+            if not replied_id:
+                await evt.reply("No messages found to summarize.")
+                return None
+            replied_event = await evt.client.get_event(evt.room_id, replied_id)
+            messages = [replied_event] if replied_event else []
+
+        if not messages:
+            await evt.reply("No messages found to summarize.")
+            return None
+
+        messages.reverse()
+        combined_text = "\n\n".join(
+            evt.content.body for evt in messages if hasattr(evt.content, 'body')
+        )
+
+        summary = await self.ai_integration.summarize_content(combined_text)
+        if not summary:
+            self.log.warning("AI summarization returned empty or failed; falling back to raw text.")
+            summary = combined_text
+
+        return summary
+
     # Function to generate title for bypassed links
     async def generate_title_for_bypassed_links(self, message_body: str) -> Optional[str]:
         # Remove the use_links_prompt parameter since generate_links_title doesn't accept it
