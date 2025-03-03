@@ -62,6 +62,7 @@ class Config(BaseProxyConfig):
         helper.copy("url_listening") # trigger for the url listening command
         helper.copy("url_post_trigger") # trigger for the url post command
         helper.copy("target_audience") # target audience context for ai generation
+        helper.copy("summary_length_in_characters") # length of the summary preview
         # Handle URL patterns and blacklist separately
         if "url_patterns" in helper.base:
             self["url_patterns"] = list(helper.base["url_patterns"])
@@ -1274,7 +1275,7 @@ class MatrixToDiscourseBot(Plugin):
             post_url = post_url.replace("[", "").replace("]", "")
             bypass_links = generate_bypass_links(url)  # Ensure bypass links are generated
             await evt.reply(
-                f"🔗 {title}\n\n"
+                f"🔗 {title}\n"
                 f"**Forum Post URL:** {post_url}\n\n"
                 f"**Summary Preview:** {summary[:self.config['summary_length_in_characters']]}...\n\n"
             )
