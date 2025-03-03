@@ -32,15 +32,15 @@ Thanks for checking out the roadmap for the Matrix to Discourse Bot! This docume
 
 ## Roadmap
 - [ ] Create a post based on links posted in the chat. (Working on) Branch: URL-handling-single-file
-    - [ ] List of URLs to trigger REGEX conversion and posting.
-    - [ ] Option to reply to any message containing a link and go through this process even if the link isn't in the list.
-    - [ ] REGEX to convert links to 12ft.io and archive.org links to bypass paywalls.
-    - [ ] Tag post with "posted-link" tag.
+    - [x] List of URLs to trigger REGEX conversion and posting.
+    - [x] Option to reply to any message containing a link and go through this process even if the link isn't in the list.
+    - [x] REGEX to convert links to 12ft.io and archive.org links to bypass paywalls.
+    - [x] Tag post with "posted-link" tag.
     - [ ] Search for duplicate posts with the same URL, don't create a new post if it exists.
-    - [ ] Scrape the post and summarize it using GPT-4o-mini.
-    - [ ] Add the summary as a post body.
-    - [ ] Add the 12ft.io and archive.org links to the post body.
-    - [ ] Return the post link to the chat.
+    - [x] Scrape the post and summarize it using GPT-4o-mini.
+    - [x] Add the summary as a post body.
+    - [x] Add the 12ft.io and archive.org links to the post body.
+    - [x] Return the post link to the chat.
 - [ ] Enhanced Post Summarization Functionality.(working on) (Branch: Multiple-Message-Summaries) 
     - [ ] Implement `!fpost -n <number>` to summarize the last `<number>` messages into a post.
     - [ ] Implement `!fpost -h <hours>`, `-m <minutes>`, `-d <days>` to summarize messages from a specified timeframe.
