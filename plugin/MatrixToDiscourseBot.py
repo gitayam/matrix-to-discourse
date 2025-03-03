@@ -553,7 +553,7 @@ class DiscourseAPI:
     # Check for duplicate posts with discourse api
     async def check_for_duplicate(self, url: str, tag: str = "posted-link") -> bool:
         """
-        Check for duplicate posts by searching for a URL within posts tagged with a specific tag.
+        Check for duplicate posts by searching for a URL within posts.
 
         Args:
             url (str): The URL to check for duplicates.
@@ -561,6 +561,7 @@ class DiscourseAPI:
 
         Returns:
             bool: True if a duplicate post is found, False otherwise.
+            str: The URL of the duplicate post if found, None otherwise.
         """
         search_url = f"{self.config['discourse_base_url']}/search/query.json"
         headers = {
@@ -568,40 +569,98 @@ class DiscourseAPI:
             "Api-Key": self.config["discourse_api_key"],
             "Api-Username": self.config["discourse_api_username"],
         }
-        # Extract base URL without tracking or query data
-        base_url = re.sub(r'\?.*$', '', url)  # Remove query parameters
-        self.log.debug(f"Checking for duplicates of base URL: {base_url}")
+        
+        # Normalize the URL for more accurate matching
+        normalized_url = self.normalize_url(url)
+        self.log.debug(f"Checking for duplicates of normalized URL: {normalized_url}")
 
-        # Search for posts tagged with the specific tag
-        params = {"term": f'tags:{tag}'}
-        self.log.debug(f"Searching Discourse with params: {params}")
+        # First try searching directly for the URL
+        params = {"term": normalized_url}
+        self.log.debug(f"Searching Discourse with direct URL: {params}")
 
-        async with aiohttp.ClientSession() as session:
-            try:
+        try:
+            async with aiohttp.ClientSession() as session:
                 async with session.get(search_url, headers=headers, params=params) as response:
                     if response.status != 200:
                         self.log.error(f"Discourse API error: {response.status}")
-                        return False
+                        return False, None
 
                     response_json = await response.json()
-                    self.log.debug(f"Received response: {response_json}")
+                    self.log.debug(f"Received response for direct URL search: {response_json}")
 
-                    # Check each post for the base URL in its "raw" content
+                    # Check if any posts contain the URL
+                    if response_json.get("posts", []):
+                        for post in response_json.get("posts", []):
+                            post_id = post.get("id")
+                            topic_id = post.get("topic_id")
+                            if topic_id:
+                                topic_url = f"{self.config['discourse_base_url']}/t/{topic_id}"
+                                self.log.info(f"Duplicate post found: {topic_url}")
+                                return True, topic_url
+            
+            # If no direct match, try searching for posts with the tag
+            params = {"term": f'tags:{tag}'}
+            self.log.debug(f"Searching Discourse with tag: {params}")
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(search_url, headers=headers, params=params) as response:
+                    if response.status != 200:
+                        self.log.error(f"Discourse API error: {response.status}")
+                        return False, None
+
+                    response_json = await response.json()
+                    
+                    # Check each post for the normalized URL in its "raw" content
                     for post in response_json.get("posts", []):
                         raw_content = post.get("raw", "")
-                        self.log.debug(f"Checking post ID {post.get('id')} with raw content: {raw_content}")
-
-                        if "Original Link:" in raw_content and base_url in raw_content:
-                            self.log.info(f"Duplicate post found: {post.get('topic_id')}")
-                            return True
-
-            except Exception as e:
-                self.log.error(f"Error during Discourse API request: {e}")
-                return False
-
-        self.log.info("No duplicate found.")
-        return False
-    
+                        post_id = post.get("id")
+                        topic_id = post.get("topic_id")
+                        
+                        # Check for various URL formats that might be in the content
+                        url_variations = [
+                            normalized_url,
+                            normalized_url.replace("https://", "http://"),
+                            normalized_url.replace("http://", "https://"),
+                            normalized_url.replace("https://www.", "https://"),
+                            normalized_url.replace("http://www.", "http://"),
+                            normalized_url.replace("https://", "https://www."),
+                            normalized_url.replace("http://", "http://www.")
+                        ]
+                        
+                        for variation in url_variations:
+                            if variation in raw_content:
+                                if topic_id:
+                                    topic_url = f"{self.config['discourse_base_url']}/t/{topic_id}"
+                                    self.log.info(f"Duplicate post found: {topic_url}")
+                                    return True, topic_url
+                                
+        except Exception as e:
+            self.log.error(f"Error during Discourse API request: {e}")
+            return False, None
+            
+        return False, None
+        
+    def normalize_url(self, url: str) -> str:
+        """
+        Normalize a URL by removing query parameters, fragments, and trailing slashes.
+        
+        Args:
+            url (str): The URL to normalize.
+            
+        Returns:
+            str: The normalized URL.
+        """
+        # Parse the URL
+        parsed_url = urlparse(url)
+        
+        # Reconstruct the URL without query parameters and fragments
+        normalized_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+        
+        # Remove trailing slash if present
+        if normalized_url.endswith('/'):
+            normalized_url = normalized_url[:-1]
+            
+        return normalized_url
     # Search the discourse api for a query
     async def search_discourse(self, query: str):
         search_url = f"{self.config['discourse_base_url']}/search.json"
@@ -1546,9 +1605,9 @@ class MatrixToDiscourseBot(Plugin):
 
         for url in urls_to_process:
             # Check for duplicates
-            duplicate_exists = await self.discourse_api.check_for_duplicate(url)
+            duplicate_exists, duplicate_url = await self.discourse_api.check_for_duplicate(url)
             if duplicate_exists:
-                await evt.reply(f"A post with this URL already exists: {url}")
+                await evt.reply(f"This URL has already been posted, a post summarizing and linking to 12ft.io and archive.org is already on the forum here: {duplicate_url}")
                 continue
 
             # Scrape content
