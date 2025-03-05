@@ -187,7 +187,7 @@ class TestMatrixToDiscourseBot(unittest.IsolatedAsyncioTestCase):
         # Mock URL extraction
         with patch('url_handler.extract_urls', return_value=['https://example.com/article']):
             # Mock Discourse API check_for_duplicate
-            self.bot.discourse_api.check_for_duplicate.return_value = False
+            self.bot.discourse_api.check_for_duplicate.return_value = (False, None)
             # Mock scrape_content
             with patch('url_handler.scrape_content', return_value='Scraped content'):
                 # Mock summarization
@@ -209,12 +209,13 @@ class TestMatrixToDiscourseBot(unittest.IsolatedAsyncioTestCase):
 
         # Mock URL extraction
         with patch('url_handler.extract_urls', return_value=['https://example.com/article']):
-            # Mock Discourse API check_for_duplicate
-            self.bot.discourse_api.check_for_duplicate.return_value = True
+            # Mock Discourse API check_for_duplicate with duplicate URL
+            duplicate_url = 'https://discourse.example.com/t/existing-topic/123'
+            self.bot.discourse_api.check_for_duplicate.return_value = (True, duplicate_url)
 
             await self.bot.process_link(evt, message_body)
-            # Assert that a duplicate message was sent
-            evt.reply.assert_called_with('A post with this URL already exists: https://example.com/article')
+            # Assert that a duplicate message was sent with the duplicate URL
+            evt.reply.assert_called_with(f'A post with this URL already exists: {duplicate_url}')
 
     async def test_post_to_discourse_discourse_api_failure(self):
         # Mock event
@@ -250,7 +251,10 @@ class TestMatrixToDiscourseBot(unittest.IsolatedAsyncioTestCase):
         expected_links = {
             'original': 'https://example.com/article',
             '12ft': 'https://12ft.io/https://example.com/article',
-            'archive': 'https://web.archive.org/web/https://example.com/article',
+            'archive.org': 'https://web.archive.org/web/https://example.com/article',
+            'archive.is': 'https://archive.is/https://example.com/article',
+            'archive.ph': 'https://archive.ph/https://example.com/article',
+            'archive.today': 'https://archive.today/https://example.com/article',
         }
         self.assertEqual(links, expected_links)
 

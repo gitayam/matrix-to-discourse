@@ -8,6 +8,7 @@ import argparse
 from datetime import datetime, timedelta, timezone
 from typing import Type, Dict, List, Optional
 from urllib.parse import urlparse
+import random
 
 from mautrix.client import Client
 from mautrix.types import (
@@ -179,13 +180,13 @@ class AIIntegration:
         try:
             if not self.discourse_api:
                 self.log.error("Discourse API is not initialized.")
-                return None
+                return ["posted-link"]  # Return default tag instead of None
 
             # Get existing tags from Discourse for context
             all_tags = await self.discourse_api.get_all_tags()
             if all_tags is None:
                 self.log.error("Failed to fetch tags from Discourse API.")
-                return ["posted-link"]  # Fallback to a default tag
+                return ["posted-link"]  # Return default tag
 
             # Log the type and content of all_tags for debugging
             self.log.debug(f"Type of all_tags: {type(all_tags)}")
@@ -194,7 +195,7 @@ class AIIntegration:
             # Check if all_tags is a list and contains dictionaries
             if not isinstance(all_tags, list) or not all(isinstance(tag, dict) for tag in all_tags):
                 self.log.error("Unexpected format for all_tags. Expected a list of dictionaries.")
-                return ["posted-link"]  # Fallback to a default tag
+                return ["posted-link"]  # Return default tag
 
             tag_names = [tag["name"] for tag in all_tags]
             tag_list = ", ".join(list(dict.fromkeys(tag_names)))
@@ -207,7 +208,7 @@ class AIIntegration:
                     api_key = self.config.get('openai.api_key', None)
                     if not api_key:
                         self.log.error("OpenAI API key is not configured.")
-                        return None
+                        return ["posted-link"]  # Return default tag
 
                     headers = {
                         "Content-Type": "application/json",
@@ -228,20 +229,26 @@ class AIIntegration:
                                 response_json = json.loads(response_text)
                             except json.JSONDecodeError as e:
                                 self.log.error(f"Error decoding OpenAI response: {e}\nResponse text: {response_text}")
-                                return None
+                                return ["posted-link"]  # Return default tag
 
                             if response.status == 200:
                                 tags_text = response_json["choices"][0]["message"]["content"].strip()
                                 tags = [tag.strip().lower().replace(' ', '-') for tag in tags_text.split(',')]
-                                tags = [tag for tag in tags if tag][:5]
+                                # Filter out invalid tags
+                                tags = [tag for tag in tags if tag and re.match(r'^[a-z0-9\-]+$', tag)]
+                                tags = tags[:5]  # Limit to 5 tags
+                                
+                                # Ensure we have at least one tag
+                                if not tags:
+                                    return ["posted-link"]
                                 return tags
                             else:
                                 self.log.error(f"OpenAI API error: {response.status} {response_json}")
-                                return None
+                                return ["posted-link"]  # Return default tag
                 except Exception as e:
                     tb = traceback.format_exc()
                     self.log.error(f"Error generating tags with OpenAI: {e}\n{tb}")
-                    return None
+                    return ["posted-link"]  # Return default tag
 
             elif self.config["ai_model_type"] == "local":
                 headers = {
@@ -261,22 +268,28 @@ class AIIntegration:
                             response_json = json.loads(response_text)
                         except json.JSONDecodeError as e:
                             self.log.error(f"Error decoding Local LLM response: {e}\nResponse text: {response_text}")
-                            return None
+                            return ["posted-link"]  # Return default tag
 
                         if response.status == 200:
                             tags_text = response_json.get("text", "").strip()
                             tags = [tag.strip().lower().replace(' ', '-') for tag in tags_text.split(',')]
-                            tags = [tag for tag in tags if tag][:5]
+                            # Filter out invalid tags
+                            tags = [tag for tag in tags if tag and re.match(r'^[a-z0-9\-]+$', tag)]
+                            tags = tags[:5]  # Limit to 5 tags
+                            
+                            # Ensure we have at least one tag
+                            if not tags:
+                                return ["posted-link"]
                             return tags
                         else:
                             self.log.error(f"Local LLM API error: {response.status} {response_json}")
-                            return None
+                            return ["posted-link"]  # Return default tag
 
             elif self.config["ai_model_type"] == "google":
                 api_key = self.config.get('google.api_key', None)
                 if not api_key:
                     self.log.error("Google API key is not configured.")
-                    return None
+                    return ["posted-link"]  # Return default tag
 
                 headers = {
                     "Content-Type": "application/json",
@@ -299,25 +312,31 @@ class AIIntegration:
                             response_json = json.loads(response_text)
                         except json.JSONDecodeError as e:
                             self.log.error(f"Error decoding Google API response: {e}\nResponse text: {response_text}")
-                            return None
+                            return ["posted-link"]  # Return default tag
 
                         if response.status == 200:
                             tags_text = response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
                             tags = [tag.strip().lower().replace(' ', '-') for tag in tags_text.split(',')]
-                            tags = [tag for tag in tags if tag][:5]
+                            # Filter out invalid tags
+                            tags = [tag for tag in tags if tag and re.match(r'^[a-z0-9\-]+$', tag)]
+                            tags = tags[:5]  # Limit to 5 tags
+                            
+                            # Ensure we have at least one tag
+                            if not tags:
+                                return ["posted-link"]
                             return tags
                         else:
                             self.log.error(f"Google API error: {response.status} {response_json}")
-                            return None
+                            return ["posted-link"]  # Return default tag
 
             else:
                 self.log.error(f"Unknown AI model type: {self.config['ai_model_type']}")
-                return None
+                return ["posted-link"]  # Return default tag
 
         except Exception as e:
             tb = traceback.format_exc()
             self.log.error(f"Error generating tags: {e}\n{tb}")
-            return ["fix-me"]  # Fallback to a default tag
+            return ["posted-link"]  # Return default tag instead of "fix-me"
 
     generate_title_prompt = "Create a brief (3-10 word) attention-grabbing title for the {target_audience} for the following post on the community forum: {message_body}"
     generate_links_title_prompt = "Create a brief (3-10 word) attention-grabbing title for the following post on the community forum include the source and title of the linked content: {message_body}"
@@ -778,7 +797,10 @@ def generate_bypass_links(url: str) -> Dict[str, str]:
     links = {
         "original": url,
         "12ft": f"https://12ft.io/{url}",
-        "archive": f"https://web.archive.org/web/{url}",
+        "archive.org": f"https://web.archive.org/web/{url}",
+        "archive.is": f"https://archive.is/{url}",
+        "archive.ph": f"https://archive.ph/{url}",
+        "archive.today": f"https://archive.today/{url}",
     }
     return links
 
@@ -795,10 +817,61 @@ async def scrape_content(url: str) -> Optional[str]:
             return await scrape_linkedin_content(url)
         else:
             # Fallback to generic scraping
-            return await generic_scrape_content(url)
+            content = await generic_scrape_content(url)
+            if content:
+                return content
+            else:
+                # If original URL fails, try archive services
+                logger.info(f"Original URL {url} failed, trying archive services")
+                return await scrape_from_archives(url)
     except Exception as e:
         logger.error(f"Error scraping content from {url}: {str(e)}")
         return None
+
+async def scrape_from_archives(url: str) -> Optional[str]:
+    """Try to scrape content from various archive services when the original URL fails."""
+    archive_urls = [
+        f"https://web.archive.org/web/{url}",
+        f"https://archive.is/{url}",
+        f"https://archive.ph/{url}",
+        f"https://archive.today/{url}",
+        f"https://12ft.io/{url}"
+    ]
+    
+    # Try Google Cache as well
+    google_cache_url = f"https://webcache.googleusercontent.com/search?q=cache:{url}"
+    archive_urls.append(google_cache_url)
+    
+    for archive_url in archive_urls:
+        logger.info(f"Trying to scrape from archive: {archive_url}")
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(archive_url, timeout=15) as response:
+                    if response.status == 200:
+                        html = await response.text()
+                        soup = BeautifulSoup(html, 'html.parser')
+                        
+                        # Get title
+                        title = soup.title.string if soup.title else ""
+                        
+                        # Get main content (first few paragraphs)
+                        paragraphs = soup.find_all("p")[:5]  # Get first 5 paragraphs
+                        content = "\n".join(p.get_text().strip() for p in paragraphs)
+                        
+                        if content:
+                            # Combine all content
+                            scraped_content = f"""
+Title: {title} (Retrieved from {archive_url})
+
+Content:
+{content}
+"""
+                            return scraped_content.strip()
+        except Exception as e:
+            logger.error(f"Error scraping from archive {archive_url}: {str(e)}")
+            continue
+    
+    return None
 
 async def scrape_twitter_content(url: str) -> Optional[str]:
     """Scrape content from a Twitter URL using snscrape."""
@@ -852,8 +925,8 @@ Replies: {tweet.replyCount}"""
         return None
 async def scrape_linkedin_content(url: str, timeout: int = 10) -> Optional[str]:
     """
-    Scrape content from a LinkedIn URL using the public API.
-    Supports posts, articles, company updates, and profiles.
+    Scrape content from a LinkedIn URL using direct HTML scraping instead of the API.
+    This method doesn't require authentication and works with public LinkedIn posts.
     
     Args:
         url (str): The LinkedIn URL to scrape.
@@ -863,59 +936,76 @@ async def scrape_linkedin_content(url: str, timeout: int = 10) -> Optional[str]:
         Optional[str]: The formatted content or None on failure.
     """
     try:
-        # Extract post ID and content type from various LinkedIn URL formats.
-        post_info = extract_linkedin_post_id(url)
-        if not post_info:
-            logger.error(f"Could not extract post information from URL: {url}")
-            return None
-
-        post_id, content_type = post_info
-
-        # For profiles, return a simplified format.
-        if content_type == 'profiles':
-            return (
-                f"LinkedIn Profile\n"
-                f"Profile ID: {post_id}\n"
-                f"URL: {url}\n\n"
-                f"Note: Due to LinkedIn's privacy restrictions, detailed profile "
-                "information cannot be scraped. Please visit the profile URL directly "
-                "to view the full profile."
-            )
-
-        # Use a configuration dict for API credentials.
-        linkedin_config = {
-            "client_id": "your_client_id",
-            "client_secret": "your_client_secret",
-            "redirect_uri": "your_redirect_uri",
-            "access_token": "your_access_token"
-        }
-
-        api_url = f"https://api.linkedin.com/v2/{content_type}/{post_id}"
+        # Use custom headers to mimic a browser
         headers = {
-            "Authorization": f"Bearer {linkedin_config['access_token']}",
-            "X-Restli-Protocol-Version": "2.0.0"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Cache-Control": "max-age=0",
+            "Referer": "https://www.google.com/"
         }
-
-        # Use a timeout for the request.
+        
+        # Use a timeout for the request
         timeout_obj = aiohttp.ClientTimeout(total=timeout)
+        
         async with aiohttp.ClientSession(timeout=timeout_obj) as session:
-            async with session.get(api_url, headers=headers) as response:
+            async with session.get(url, headers=headers) as response:
                 if response.status != 200:
-                    logger.error(f"LinkedIn API error ({response.status}) for URL: {api_url}")
-                    return None
-
-                post_data = await response.json()
-                content = await format_linkedin_content(post_data, content_type)
-                return content
-
-    except aiohttp.ClientError as e:
-        logger.error(f"Network error while scraping LinkedIn content: {e}")
-    except json.JSONDecodeError as e:
-        logger.error(f"Error parsing LinkedIn API response: {e}")
+                    logger.error(f"Failed to fetch LinkedIn URL: {url}, status: {response.status}")
+                    # Try archive services as a fallback
+                    return await scrape_from_archives(url)
+                
+                html = await response.text()
+                soup = BeautifulSoup(html, 'html.parser')
+                
+                # Extract post information
+                title = soup.title.string if soup.title else "LinkedIn Post"
+                
+                # Try to extract author information
+                author = None
+                author_elem = soup.select_one('a.share-update-card__actor-text-link')
+                if author_elem:
+                    author = author_elem.get_text(strip=True)
+                
+                # Try to extract post content
+                content = ""
+                content_elem = soup.select_one('div.share-update-card__update-text')
+                if content_elem:
+                    content = content_elem.get_text(strip=True)
+                
+                # If we couldn't find content through specific selectors, try more generic approaches
+                if not content:
+                    # Look for article content
+                    article_elem = soup.select_one('article')
+                    if article_elem:
+                        paragraphs = article_elem.select('p')
+                        content = "\n".join(p.get_text(strip=True) for p in paragraphs)
+                
+                # If still no content, extract meta description
+                if not content:
+                    meta_desc = soup.find("meta", {"name": "description"}) or soup.find("meta", {"property": "og:description"})
+                    if meta_desc:
+                        content = meta_desc.get("content", "")
+                
+                # Format the extracted information
+                formatted_content = f"LinkedIn Post\n\n"
+                
+                if author:
+                    formatted_content += f"Author: {author}\n\n"
+                
+                formatted_content += f"Content:\n{content}\n\n"
+                formatted_content += f"URL: {url}"
+                
+                return formatted_content
+                
     except Exception as e:
-        logger.error(f"Unexpected error scraping LinkedIn content: {e}")
-    return None
-
+        logger.error(f"Error scraping LinkedIn content: {str(e)}")
+        # Try archive services as a fallback
+        return await scrape_from_archives(url)
 
 def extract_linkedin_post_id(url: str) -> Optional[tuple[str, str]]:
     """
@@ -1096,37 +1186,79 @@ def extract_reddit_post_id(url: str) -> Optional[str]:
         return None
 
 async def generic_scrape_content(url: str) -> Optional[str]:
-    """Generic scraping for non-social media URLs."""
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            if response.status != 200:
-                logger.error(f"Failed to fetch URL: {url}, status: {response.status}")
-                return None
-            
-            html = await response.text()
-            soup = BeautifulSoup(html, 'html.parser')
-            
-            # Get title
-            title = soup.title.string if soup.title else ""
-            
-            # Get meta description
-            description = ""
-            meta_desc = soup.find("meta", {"name": "description"})
-            if meta_desc:
-                description = meta_desc.get("content", "")
-            
-            # Get meta keywords
-            keywords = ""
-            meta_keywords = soup.find("meta", {"name": "keywords"})
-            if meta_keywords:
-                keywords = meta_keywords.get("content", "")
-            
-            # Get main content (first few paragraphs)
-            paragraphs = soup.find_all("p")[:3]  # Get first 3 paragraphs
-            content = "\n".join(p.get_text().strip() for p in paragraphs)
-            
-            # Combine all content
-            scraped_content = f"""
+    """Generic scraping for non-social media URLs with improved headers and error handling."""
+    # Common user agents to rotate through
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0"
+    ]
+    
+    # Custom headers to mimic a browser
+    headers = {
+        "User-Agent": random.choice(user_agents),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Cache-Control": "max-age=0",
+        "TE": "Trailers",
+        "Referer": "https://www.google.com/"
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=15, allow_redirects=True) as response:
+                if response.status != 200:
+                    logger.error(f"Failed to fetch URL: {url}, status: {response.status}")
+                    return None
+                
+                html = await response.text()
+                soup = BeautifulSoup(html, 'html.parser')
+                
+                # Get title
+                title = soup.title.string if soup.title else ""
+                
+                # Get meta description
+                description = ""
+                meta_desc = soup.find("meta", {"name": "description"}) or soup.find("meta", {"property": "og:description"})
+                if meta_desc:
+                    description = meta_desc.get("content", "")
+                
+                # Get meta keywords
+                keywords = ""
+                meta_keywords = soup.find("meta", {"name": "keywords"})
+                if meta_keywords:
+                    keywords = meta_keywords.get("content", "")
+                
+                # Try different content extraction strategies
+                content = ""
+                
+                # Strategy 1: Look for article or main content
+                article = soup.find("article") or soup.find("main") or soup.find(id=["content", "main", "article"])
+                if article:
+                    paragraphs = article.find_all("p")
+                    content = "\n".join(p.get_text().strip() for p in paragraphs[:10])  # Get up to 10 paragraphs
+                
+                # Strategy 2: If no article found, try common content containers
+                if not content:
+                    for container in ["div.content", "div.article", "div.post", ".post-content", ".article-content"]:
+                        content_div = soup.select_one(container)
+                        if content_div:
+                            paragraphs = content_div.find_all("p")
+                            content = "\n".join(p.get_text().strip() for p in paragraphs[:10])
+                            break
+                
+                # Strategy 3: Fallback to first few paragraphs
+                if not content:
+                    paragraphs = soup.find_all("p")[:10]  # Get first 10 paragraphs
+                    content = "\n".join(p.get_text().strip() for p in paragraphs)
+                
+                # Combine all content
+                scraped_content = f"""
 Title: {title}
 
 Description: {description}
@@ -1136,10 +1268,16 @@ Keywords: {keywords}
 Content:
 {content}
 """
-            return scraped_content.strip()
+                return scraped_content.strip()
+    except Exception as e:
+        logger.error(f"Error in generic scraping for {url}: {str(e)}")
+        return None
 
 async def scrape_pdf_content(url: str) -> Optional[str]:
-    """Scrape the first page text from a PDF URL."""
+    """
+    Scrape content from a PDF URL with improved structure detection.
+    Extracts text while attempting to preserve headings and paragraphs.
+    """
     try:
         # Clean the URL by removing the fragment identifier
         clean_url = url.split('#')[0]
@@ -1151,16 +1289,73 @@ async def scrape_pdf_content(url: str) -> Optional[str]:
                     return None
                 data = await response.read()
 
-        # Ensure pdfminer.six is installed
-        from pdfminer.high_level import extract_text
-        from io import BytesIO
+        # Use pdfminer.six for text extraction with layout analysis
+        from pdfminer.high_level import extract_text_to_fp
+        from pdfminer.layout import LAParams
+        from io import BytesIO, StringIO
+        
         pdf_file = BytesIO(data)
-        # Extract text from the first page only
-        text = extract_text(pdf_file, page_numbers=[0])
-        return text.strip() if text else "No text found in PDF first page."
+        output = StringIO()
+        
+        # Configure LAParams for better structure detection
+        laparams = LAParams(
+            line_margin=0.5,
+            word_margin=0.1,
+            char_margin=2.0,
+            boxes_flow=0.5,
+            detect_vertical=True
+        )
+        
+        # Extract text with layout analysis
+        extract_text_to_fp(pdf_file, output, laparams=laparams, page_numbers=[0, 1])  # First two pages
+        text = output.getvalue()
+        
+        # Basic structure detection - identify potential headings
+        lines = text.split('\n')
+        structured_content = []
+        current_paragraph = []
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                if current_paragraph:
+                    structured_content.append(' '.join(current_paragraph))
+                    current_paragraph = []
+                continue
+                
+            # Potential heading detection (simplified)
+            if len(line) < 100 and line.endswith(':') or line.isupper() or line.istitle():
+                if current_paragraph:
+                    structured_content.append(' '.join(current_paragraph))
+                    current_paragraph = []
+                structured_content.append(f"## {line}")
+            else:
+                current_paragraph.append(line)
+                
+        if current_paragraph:
+            structured_content.append(' '.join(current_paragraph))
+            
+        # Format the extracted content
+        formatted_content = f"""
+# PDF Content Summary
+
+URL: {url}
+
+{'\n\n'.join(structured_content[:5])}  # Limit to first 5 sections for brevity
+"""
+        return formatted_content.strip()
+        
     except Exception as e:
-        logger.error(f"Error scraping PDF from {url}: {str(e)}")
-        return None
+        logger.error(f"Error scraping PDF content from {url}: {str(e)}")
+        # Fallback to basic extraction if layout analysis fails
+        try:
+            from pdfminer.high_level import extract_text
+            pdf_file = BytesIO(data)
+            text = extract_text(pdf_file, page_numbers=[0])
+            return f"# PDF Content Summary\n\nURL: {url}\n\n{text[:1000]}..."  # First 1000 chars
+        except Exception as inner_e:
+            logger.error(f"Fallback PDF extraction failed: {str(inner_e)}")
+            return None
 
 # Main plugin class
 class MatrixToDiscourseBot(Plugin):
@@ -1620,7 +1815,7 @@ class MatrixToDiscourseBot(Plugin):
                     summary = "Content could not be scraped or summarized."
             else:
                 self.log.warning(f"Scraping content failed for URL: {url}")
-                summary = "Content could not be scraped or summarized."
+                summary = "Content could not be scraped or summarized. The original site may have access restrictions."
 
             # Generate title
             title = await self.generate_title_for_bypassed_links(message_body)
@@ -1628,30 +1823,66 @@ class MatrixToDiscourseBot(Plugin):
                 self.log.info(f"Generating title using URL and domain for: {url}")
                 title = await self.generate_title_for_bypassed_links(f"URL: {url}, Domain: {url.split('/')[2]}")
                 if not title:
-                    title = "Untitled Post"
+                    title = f"Link from {url.split('/')[2]}"
 
             # Generate tags
             tags = await self.ai_integration.generate_tags(content)
             # Log the generated tags for debugging
             self.log.debug(f"Generated tags: {tags}")
             
-            # Ensure 'posted-link' is in the tags
-            if "posted-link" not in tags:
-                tags.append("posted-link")
-            if not tags:
-                tags = ["posted-link"]  # Fallback tags if generation fails
+            # Ensure tags are valid
+            if tags is None:
+                tags = ["posted-link"]
+            else:
+                # Filter out any invalid tags (empty strings, None values, or tags with invalid characters)
+                tags = [tag for tag in tags if tag and isinstance(tag, str) and re.match(r'^[a-z0-9\-]+$', tag)]
+                
+                # Ensure 'posted-link' is in the tags
+                if "posted-link" not in tags:
+                    tags.append("posted-link")
+                
+                # If all tags were filtered out, use default
+                if not tags:
+                    tags = ["posted-link"]
+                
+                # Limit to 5 tags maximum
+                tags = tags[:5]
 
             # Generate bypass links
             bypass_links = generate_bypass_links(url)
 
+            # Check which archive links are working
+            working_archive_links = {}
+            for name, archive_url in bypass_links.items():
+                if name == "original":
+                    working_archive_links[name] = archive_url
+                    continue
+                
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.head(archive_url, timeout=5) as response:
+                            if response.status < 400:  # Any successful status code
+                                working_archive_links[name] = archive_url
+                except Exception:
+                    self.log.debug(f"Archive link {name} is not working for {url}")
+                    continue
+
+            # Prepare archive links section
+            archive_links_section = "**Archive Links:**\n"
+            if len(working_archive_links) <= 1:  # Only original link is working
+                archive_links_section += "No working archive links found. The content may be too recent or behind a paywall.\n"
+            else:
+                for name, archive_url in working_archive_links.items():
+                    if name != "original":
+                        archive_links_section += f"**{name}:** {archive_url}\n"
+
             # Prepare message body
             post_body = (
                 f"{summary}\n\n"
-                f"**12ft.io Link:** {bypass_links['12ft']}\n"
-                f"**Archive.org Link:** {bypass_links['archive']}\n\n"
+                f"{archive_links_section}\n"
                 f"**Original Link:** <{url}>\n\n"
                 f"User Message: {message_body}\n\n"
-                f"for more on see the [post on bypassing methods](https://forum.irregularchat.com/t/bypass-links-and-methods/98?u=sac)"
+                f"For more on bypassing paywalls, see the [post on bypassing methods](https://forum.irregularchat.com/t/bypass-links-and-methods/98?u=sac)"
             )
 
             # Determine category ID based on room ID
@@ -1659,6 +1890,7 @@ class MatrixToDiscourseBot(Plugin):
 
             # Log the category ID being used
             self.log.info(f"Using category ID: {category_id}")
+            self.log.info(f"Final tags being used: {tags}")
 
             # Create the post on Discourse
             post_url, error = await self.discourse_api.create_post(
