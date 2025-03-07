@@ -291,7 +291,13 @@ class AIIntegration:
                                 tags = [tag.strip().lower().replace(' ', '-') for tag in tags_text.split(',')]
                                 # Filter out invalid tags
                                 tags = [tag for tag in tags if tag and re.match(r'^[a-z0-9\-]+$', tag)]
-                                tags = tags[:5]  # Limit to 5 tags
+                                
+                                # Always include posted-link tag
+                                if "posted-link" not in tags:
+                                    tags.append("posted-link")
+                                
+                                # Limit to 5 tags maximum (including posted-link)
+                                tags = tags[:5]
                                 
                                 # Ensure we have at least one tag
                                 if not tags:
@@ -331,6 +337,13 @@ class AIIntegration:
                             # Filter out invalid tags
                             tags = [tag for tag in tags if tag and re.match(r'^[a-z0-9\-]+$', tag)]
                             tags = tags[:5]  # Limit to 5 tags
+                            
+                            # Always include posted-link tag
+                            if "posted-link" not in tags:
+                                tags.append("posted-link")
+                            
+                            # Limit to 5 tags maximum (including posted-link)
+                            tags = tags[:5]
                             
                             # Ensure we have at least one tag
                             if not tags:
@@ -374,7 +387,13 @@ class AIIntegration:
                             tags = [tag.strip().lower().replace(' ', '-') for tag in tags_text.split(',')]
                             # Filter out invalid tags
                             tags = [tag for tag in tags if tag and re.match(r'^[a-z0-9\-]+$', tag)]
-                            tags = tags[:5]  # Limit to 5 tags
+                            
+                            # Always include posted-link tag
+                            if "posted-link" not in tags:
+                                tags.append("posted-link")
+                            
+                            # Limit to 5 tags maximum (including posted-link)
+                            tags = tags[:5]
                             
                             # Ensure we have at least one tag
                             if not tags:
@@ -1813,6 +1832,10 @@ class MatrixToDiscourseBot(Plugin):
                 
                 # Limit to 5 tags maximum
                 tags = tags[:5]
+                
+                # Final check to ensure posted-link is still in the tags after limiting
+                if "posted-link" not in tags:
+                    tags[-1] = "posted-link"  # Replace the last tag with posted-link if it got filtered out
 
             # Generate bypass links
             bypass_links = generate_bypass_links(url)
