@@ -99,7 +99,7 @@ google:
 #   - https?://.*\.(jpg|jpeg|png|gif|webp)$    # Images
 
 # Default is false, set to true to enable URL listening. furl will still work even if this is false.
-url_listening: true
+url_listening: false
 summary_length_in_characters: 280
 url_patterns:
   - https?://.*  # Match all URLs
