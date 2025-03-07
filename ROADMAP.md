@@ -28,19 +28,20 @@ Thanks for checking out the roadmap for the Matrix to Discourse Bot! This docume
 - [x] Configuration of Trigger Words.
     - [x] Allow users to configure trigger words that will trigger the bot to create a post.
     - [x] Allow users to configure trigger words that will trigger the bot to search for a post.
-
-
-## Roadmap
-- [ ] Create a post based on links posted in the chat. (Working on) Branch: URL-handling-single-file
+- [x] Create a post based on links posted in the chat. : URL-handling-single-file
     - [x] List of URLs to trigger REGEX conversion and posting.
     - [x] Option to reply to any message containing a link and go through this process even if the link isn't in the list.
     - [x] REGEX to convert links to 12ft.io and archive.org links to bypass paywalls.
     - [x] Tag post with "posted-link" tag.
-    - [ ] Search for duplicate posts with the same URL, don't create a new post if it exists.
+    - [x] Search for duplicate posts with the same URL, don't create a new post if it exists.
     - [x] Scrape the post and summarize it using GPT-4o-mini.
     - [x] Add the summary as a post body.
     - [x] Add the 12ft.io and archive.org links to the post body.
     - [x] Return the post link to the chat.
+- [x] Relay Matrix messages to Discourse as a post reply. 
+
+## Roadmap
+
 - [ ] Enhanced Post Summarization Functionality.(working on) (Branch: Multiple-Message-Summaries) 
     - [ ] Implement `!fpost -n <number>` to summarize the last `<number>` messages into a post.
     - [ ] Implement `!fpost -h <hours>`, `-m <minutes>`, `-d <days>` to summarize messages from a specified timeframe.
