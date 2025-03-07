@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Type, Dict, List, Optional
 from urllib.parse import urlparse
 import random
+import os
 
 from mautrix.client import Client
 from mautrix.types import (
@@ -32,23 +33,29 @@ logger = logging.getLogger(__name__)
 # Config class to manage configuration
 class Config(BaseProxyConfig):
     def do_update(self, helper: ConfigUpdateHelper) -> None:
-        # General configuration
+        # AI model type
         helper.copy("ai_model_type")  # AI model type: openai, google, local, none
+        
         # OpenAI configuration
         helper.copy("openai.api_key")
         helper.copy("openai.api_endpoint")
         helper.copy("openai.model")
         helper.copy("openai.max_tokens")
         helper.copy("openai.temperature")
+        
         # Local LLM configuration
         helper.copy("local_llm.model_path")
         helper.copy("local_llm.api_endpoint")
+        helper.copy("local_llm.max_tokens")
+        helper.copy("local_llm.temperature")
+        
         # Google Gemini configuration
         helper.copy("google.api_key")
         helper.copy("google.api_endpoint")
         helper.copy("google.model")
         helper.copy("google.max_tokens")
         helper.copy("google.temperature")
+        
         # Discourse configuration
         helper.copy("discourse_api_key")  # API key for discourse
         helper.copy("discourse_api_username")  # Username for discourse
@@ -60,10 +67,21 @@ class Config(BaseProxyConfig):
         helper.copy("search_trigger") # trigger for the search command
         helper.copy("post_trigger") # trigger for the post command
         helper.copy("help_trigger") # trigger for the help command
-        helper.copy("url_listening") # trigger for the url listening command
+        helper.copy("url_listening") # trigger for the url listening
         helper.copy("url_post_trigger") # trigger for the url post command
         helper.copy("target_audience") # target audience context for ai generation
         helper.copy("summary_length_in_characters") # length of the summary preview
+        
+        # Admin configuration
+        helper.copy("admins", [])  # List of admin user IDs, default to empty list
+        
+        # MediaWiki configuration
+        helper.copy("mediawiki_base_url")  # Base URL for the community MediaWiki wiki
+        helper.copy("mediawiki_search_trigger")  # Command trigger for MediaWiki wiki search
+        helper.copy("mediawiki.api_endpoint")
+        helper.copy("mediawiki.username")
+        helper.copy("mediawiki.password")
+        
         # Handle URL patterns and blacklist separately
         if "url_patterns" in helper.base:
             self["url_patterns"] = list(helper.base["url_patterns"])
@@ -73,11 +91,7 @@ class Config(BaseProxyConfig):
         if "url_blacklist" in helper.base:
             self["url_blacklist"] = list(helper.base["url_blacklist"])
         else:
-            self["url_blacklist"] = [] 
-
-        # --- New configuration options for MediaWiki ---
-        helper.copy("mediawiki_base_url")  # Base URL for the community MediaWiki wiki
-        helper.copy("mediawiki_search_trigger")  # Command trigger for MediaWiki wiki search
+            self["url_blacklist"] = []
 
     def should_process_url(self, url: str) -> bool:
         """
@@ -125,6 +139,37 @@ class Config(BaseProxyConfig):
         # If no patterns match, don't process the URL
         return False
 
+    def safe_config_get(self, key: str, default=None):
+        """
+        Safely get a value from the config, handling RecursiveDict properly.
+        
+        Args:
+            key (str): The config key to get
+            default: The default value to return if the key is not found
+            
+        Returns:
+            The value from the config, or the default value if not found
+        """
+        try:
+            if hasattr(self.config, 'get'):
+                try:
+                    return self.config.get(key, default)
+                except TypeError:
+                    # If the get method requires more arguments, try with a default value
+                    self.log.debug(f"RecursiveDict detected for key {key}, using default value: {default}")
+                    try:
+                        return self.config.get(key, default)
+                    except Exception as e:
+                        self.log.warning(f"Error using get method with default for key {key}: {e}")
+                        return default
+            elif isinstance(self.config, dict) and key in self.config:
+                return self.config[key]
+            else:
+                return default
+        except Exception as e:
+            self.log.warning(f"Error getting config value for key {key}: {e}")
+            return default
+
 # AIIntegration class
 class AIIntegration:
     """
@@ -134,12 +179,12 @@ class AIIntegration:
     def __init__(self, config, log):
         self.config = config
         self.log = log
-        self.target_audience = config["target_audience"]
+        self.target_audience = config.get("target_audience", "community members")
         # Initialize Discourse API self 
         self.discourse_api = DiscourseAPI(self.config, self.log)
 
     async def generate_title(self, message_body: str, use_links_prompt: bool = False) -> Optional[str]:
-        ai_model_type = self.config["ai_model_type"]
+        ai_model_type = self.config.get("ai_model_type", "none")
 
         if ai_model_type == "openai":
             return await self.generate_openai_title(message_body, use_links_prompt)
@@ -154,7 +199,17 @@ class AIIntegration:
     async def generate_links_title(self, message_body: str) -> Optional[str]:
         """Create a title focusing on linked content."""
         prompt = f"Create a concise and relevant title for the following content, focusing on the key message and linked content:\n\n{message_body}"
-        return await self.generate_title(prompt, use_links_prompt=True)
+        ai_model_type = self.config.get("ai_model_type", "none")
+
+        if ai_model_type == "openai":
+            return await self.generate_openai_title(prompt, True)
+        elif ai_model_type == "local":
+            return await self.generate_local_title(prompt, True)
+        elif ai_model_type == "google":
+            return await self.generate_google_title(prompt, True)
+        else:
+            self.log.error(f"Unknown AI model type: {ai_model_type}")
+            return None
 
     async def summarize_content(self, content: str, user_message: str = "") -> Optional[str]:
         prompt = f"""Summarize the following content, including any user-provided context or quotes. If there isn't enough information, please just say 'Not Enough Information to Summarize':\n\nContent:\n{content}\n\nUser Message:\n{user_message}"""
@@ -527,26 +582,84 @@ class AIIntegration:
             self.log.error(f"Error summarizing with Google: {e}\n{tb}")
             return None
 
+    async def generate_title_for_bypassed_links(self, message_body: str) -> Optional[str]:
+        """
+        Generate a title for bypassed links.
+        
+        Args:
+            message_body (str): The message body to generate a title from
+            
+        Returns:
+            Optional[str]: The generated title, or None if generation fails
+        """
+        return await self.ai_integration.generate_links_title(message_body)
+
+    async def generate_title(self, message_body: str) -> Optional[str]:
+        """
+        Generate a title for a message.
+        
+        Args:
+            message_body (str): The message body to generate a title from
+            
+        Returns:
+            Optional[str]: The generated title, or None if generation fails
+        """
+        return await self.ai_integration.generate_title(message_body, use_links_prompt=False)
+
 # DiscourseAPI class
 class DiscourseAPI:
     def __init__(self, config, log):
         self.config = config
         self.log = log
-    #Get top tags used with discourse api
-    async def create_post(self, title, raw, category_id, tags=None):
-        url = f"{self.config['discourse_base_url']}/posts.json"
+        
+        # Ensure we have the required configuration
+        self.base_url = config.get("discourse_base_url", None)
+        self.api_key = config.get("discourse_api_key", None)
+        self.api_username = config.get("discourse_api_username", None)
+        
+        if not self.base_url or not self.api_key or not self.api_username:
+            log.error("Missing required Discourse configuration. Please check your config file.")
+    
+    async def create_post(self, title, raw, category_id, tags=None, topic_id=None):
+        """
+        Create a post on Discourse.
+        
+        Args:
+            title (str): The title of the post. Not needed for replies.
+            raw (str): The raw content of the post.
+            category_id (int): The category ID. Not needed for replies.
+            tags (list): List of tags. Not needed for replies.
+            topic_id (int, optional): The topic ID to reply to. If provided, creates a reply instead of a new topic.
+            
+        Returns:
+            tuple: (post_url, error)
+        """
+        if not self.base_url or not self.api_key or not self.api_username:
+            return None, "Missing required Discourse configuration"
+            
+        url = f"{self.base_url}/posts.json"
         headers = {
             "Content-Type": "application/json",
-            "Api-Key": self.config["discourse_api_key"],
-            "Api-Username": self.config["discourse_api_username"],
+            "Api-Key": self.api_key,
+            "Api-Username": self.api_username,
         }
-        # Log the payload
-        payload = {
-            "title": title,
-            "raw": raw,
-            "category": category_id,
-            "tags": tags or [],
-        }
+        
+        # Prepare payload based on whether it's a new topic or a reply
+        if topic_id:
+            # This is a reply to an existing topic
+            payload = {
+                "raw": raw,
+                "topic_id": topic_id,
+            }
+            self.log.info(f"Creating reply to topic ID: {topic_id}")
+        else:
+            # This is a new topic
+            payload = {
+                "title": title,
+                "raw": raw,
+                "category": category_id,
+                "tags": tags or [],
+            }
         
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json=payload) as response:
@@ -558,13 +671,19 @@ class DiscourseAPI:
                     return None, f"Error decoding Discourse response: {e}"
 
                 if response.status == 200:
-                    topic_id = data.get("topic_id")
-                    topic_slug = data.get("topic_slug")
-                    post_url = (
-                        f"{self.config['discourse_base_url']}/t/{topic_slug}/{topic_id}"
-                        if topic_id and topic_slug
-                        else "URL not available"
-                    )
+                    if topic_id:
+                        # For replies, we get post_id and topic_id
+                        post_id = data.get("id")
+                        post_url = f"{self.base_url}/t/{topic_id}/{post_id}"
+                    else:
+                        # For new topics, we get topic_id and topic_slug
+                        topic_id = data.get("topic_id")
+                        topic_slug = data.get("topic_slug")
+                        post_url = (
+                            f"{self.base_url}/t/{topic_slug}/{topic_id}"
+                            if topic_id and topic_slug
+                            else "URL not available"
+                        )
                     return post_url, None
                 else:
                     self.log.error(f"Discourse API error: {response.status} {data}")
@@ -582,11 +701,11 @@ class DiscourseAPI:
             bool: True if a duplicate post is found, False otherwise.
             str: The URL of the duplicate post if found, None otherwise.
         """
-        search_url = f"{self.config['discourse_base_url']}/search/query.json"
+        search_url = f"{self.base_url}/search/query.json"
         headers = {
             "Content-Type": "application/json",
-            "Api-Key": self.config["discourse_api_key"],
-            "Api-Username": self.config["discourse_api_username"],
+            "Api-Key": self.api_key,
+            "Api-Username": self.api_username,
         }
         
         # Normalize the URL for more accurate matching
@@ -613,7 +732,7 @@ class DiscourseAPI:
                             post_id = post.get("id")
                             topic_id = post.get("topic_id")
                             if topic_id:
-                                topic_url = f"{self.config['discourse_base_url']}/t/{topic_id}"
+                                topic_url = f"{self.base_url}/t/{topic_id}"
                                 self.log.info(f"Duplicate post found: {topic_url}")
                                 return True, topic_url
             
@@ -649,7 +768,7 @@ class DiscourseAPI:
                         for variation in url_variations:
                             if variation in raw_content:
                                 if topic_id:
-                                    topic_url = f"{self.config['discourse_base_url']}/t/{topic_id}"
+                                    topic_url = f"{self.base_url}/t/{topic_id}"
                                     self.log.info(f"Duplicate post found: {topic_url}")
                                     return True, topic_url
                                 
@@ -682,11 +801,11 @@ class DiscourseAPI:
         return normalized_url
     # Search the discourse api for a query
     async def search_discourse(self, query: str):
-        search_url = f"{self.config['discourse_base_url']}/search.json"
+        search_url = f"{self.base_url}/search.json"
         headers = {
             "Content-Type": "application/json",
-            "Api-Key": self.config["discourse_api_key"],
-            "Api-Username": self.config["discourse_api_username"],
+            "Api-Key": self.api_key,
+            "Api-Username": self.api_username,
         }
         params = {"q": query}
 
@@ -713,11 +832,11 @@ class DiscourseAPI:
         """
         #var with number of tags to get
         num_tags = 10
-        url = f"{self.config['discourse_base_url']}/tags.json" # get tags from discourse api
+        url = f"{self.base_url}/tags.json" # get tags from discourse api
         headers = {
             "Content-Type": "application/json",
-            "Api-Key": self.config["discourse_api_key"],
-            "Api-Username": self.config["discourse_api_username"],
+            "Api-Key": self.api_key,
+            "Api-Username": self.api_username,
         }
         # using try because the api key may be invalid
         try:
@@ -747,11 +866,11 @@ class DiscourseAPI:
         Returns:
             list: A list of all tag names, or None if the request fails
         """
-        url = f"{self.config['discourse_base_url']}/tags.json"
+        url = f"{self.base_url}/tags.json"
         headers = {
             "Content-Type": "application/json",
-            "Api-Key": self.config["discourse_api_key"],
-            "Api-Username": self.config["discourse_api_username"],
+            "Api-Key": self.api_key,
+            "Api-Username": self.api_username,
         }
         
         try:
@@ -1365,328 +1484,150 @@ class MatrixToDiscourseBot(Plugin):
         self.log.info("MatrixToDiscourseBot started")
         self.ai_integration = AIIntegration(self.config, self.log)
         self.discourse_api = DiscourseAPI(self.config, self.log)
-        self.target_audience = self.config["target_audience"]
+        self.target_audience = self.config.get("target_audience", "community members")
+        # Dictionary to map Matrix message IDs to Discourse post IDs
+        self.message_id_map = {}
+        # Load existing message ID mappings
+        await self.load_message_id_map()
+        # Start periodic save task
+        self.periodic_save_task = asyncio.create_task(self.periodic_save())
+        
+        # Log configuration status
+        self.log.info(f"AI model type: {self.config.get('ai_model_type', 'none')}")
+        self.log.info(f"URL listening enabled: {self.config.get('url_listening', False)}")
+        self.log.info(f"Discourse base URL: {self.config.get('discourse_base_url', 'not configured')}")
+    
+    def safe_config_get(self, key: str, default=None):
+        """
+        Safely get a value from the config, handling RecursiveDict properly.
+        
+        Args:
+            key (str): The config key to get
+            default: The default value to return if the key is not found
+            
+        Returns:
+            The value from the config, or the default value if not found
+        """
+        try:
+            if hasattr(self.config, 'get'):
+                try:
+                    return self.config.get(key, default)
+                except TypeError:
+                    # If the get method requires more arguments, try with a default value
+                    self.log.debug(f"RecursiveDict detected for key {key}, using default value: {default}")
+                    try:
+                        return self.config.get(key, default)
+                    except Exception as e:
+                        self.log.warning(f"Error using get method with default for key {key}: {e}")
+                        return default
+            elif isinstance(self.config, dict) and key in self.config:
+                return self.config[key]
+            else:
+                return default
+        except Exception as e:
+            self.log.warning(f"Error getting config value for key {key}: {e}")
+            return default
+
+    async def stop(self) -> None:
+        # Cancel periodic save task
+        if hasattr(self, 'periodic_save_task') and not self.periodic_save_task.done():
+            self.periodic_save_task.cancel()
+            try:
+                await self.periodic_save_task
+            except asyncio.CancelledError:
+                pass
+        # Save message ID mappings before stopping
+        await self.save_message_id_map()
+        await super().stop()
+
+    async def periodic_save(self) -> None:
+        """Periodically save the message ID mapping to ensure we don't lose data."""
+        try:
+            while True:
+                # Save every hour
+                await asyncio.sleep(3600)
+                await self.save_message_id_map()
+        except asyncio.CancelledError:
+            # Task was cancelled, just exit
+            pass
+        except Exception as e:
+            self.log.error(f"Error in periodic save task: {e}")
+
+    async def save_message_id_map(self) -> None:
+        """Save the message ID mapping to a JSON file."""
+        try:
+            # Get the data directory path
+            data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+            os.makedirs(data_dir, exist_ok=True)
+            
+            # Define the file path
+            file_path = os.path.join(data_dir, "message_id_map.json")
+            
+            # Save the mapping to the file
+            with open(file_path, "w") as f:
+                json.dump(self.message_id_map, f)
+                
+            self.log.info(f"Saved message ID mapping to {file_path}")
+        except Exception as e:
+            self.log.error(f"Error saving message ID mapping: {e}")
+
+    async def load_message_id_map(self) -> None:
+        """Load the message ID mapping from a JSON file."""
+        try:
+            # Get the data directory path
+            data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+            
+            # Define the file path
+            file_path = os.path.join(data_dir, "message_id_map.json")
+            
+            # Check if the file exists
+            if os.path.exists(file_path):
+                # Load the mapping from the file
+                with open(file_path, "r") as f:
+                    self.message_id_map = json.load(f)
+                    
+                self.log.info(f"Loaded message ID mapping from {file_path} with {len(self.message_id_map)} entries")
+            else:
+                self.log.info("No message ID mapping file found, starting with empty mapping")
+        except Exception as e:
+            self.log.error(f"Error loading message ID mapping: {e}")
+            self.message_id_map = {}
 
     # Function to get the configuration class
     @classmethod
     def get_config_class(cls) -> Type[BaseProxyConfig]:
         return Config
     # Command to handle the help event
-    @command.new(name=lambda self: self.config["help_trigger"], require_subcommand=False)
+    @command.new(name=lambda self: self.config.get("help_trigger", "help"), require_subcommand=False)
     async def help_command(self, evt: MessageEvent) -> None:
         await self.handle_help(evt)
 
     async def handle_help(self, evt: MessageEvent) -> None:
-        self.log.info(f"Command !{self.config['help_trigger']} triggered.")
+        help_trigger = self.config.get("help_trigger", "help")
+        post_trigger = self.config.get("post_trigger", "fpost")
+        search_trigger = self.config.get("search_trigger", "search")
+        url_post_trigger = self.config.get("url_post_trigger", "url")
+        
+        self.log.info(f"Command !{help_trigger} triggered.")
         help_msg = (
             "Welcome to the Community Forum Bot!\n\n"
-            f"To create a post on the forum, reply to a message with `!{self.config['post_trigger']}`.\n"
-            f"To summarize the last N messages, use `!{self.config['post_trigger']} -n <number>`.\n"
-            f"To summarize messages from a timeframe, use `!{self.config['post_trigger']} -h <hours> -m <minutes> -d <days>`.\n"
-            f"To search the forum, use `!{self.config['search_trigger']} <query>`.\n"
-            f"To post a URL, reply to a message containing a URL with `!{self.config['url_post_trigger']}`.\n"
-            f"For help, use `!{self.config['help_trigger']}`."
+            f"To create a post on the forum, reply to a message with `!{post_trigger}`.\n"
+            f"To summarize the last N messages, use `!{post_trigger} -n <number>`.\n"
+            f"To summarize messages from a timeframe, use `!{post_trigger} -h <hours> -m <minutes> -d <days>`.\n"
+            f"To search the forum, use `!{search_trigger} <query>`.\n"
+            f"To post a URL, reply to a message containing a URL with `!{url_post_trigger}`.\n"
+            f"To reply to a forum post, simply reply to the bot's message that created the post.\n\n"
+            f"Admin commands:\n"
+            f"- `!save-mappings`: Save the current message ID mappings.\n"
+            f"- `!list-mappings`: List the current message ID mappings.\n"
+            f"- `!clear-mappings`: Clear all message ID mappings.\n\n"
+            f"For help, use `!{help_trigger}`."
         )
         await evt.reply(help_msg)
 
-    # Command to handle the post command
-    @command.new(name=lambda self: self.config["post_trigger"], require_subcommand=False)
-    @command.argument("args", pass_raw=True, required=False)
-    async def post_to_discourse_command(self, evt: MessageEvent, args: str = None) -> None:
-        await self.handle_post_to_discourse(evt, args)
-
-    async def handle_post_to_discourse(self, evt: MessageEvent, args: str = None) -> None:
-        post_trigger = self.config["post_trigger"]
-        self.log.info(f"Command !{post_trigger} triggered.")
-        # Parse the arguments for the command
-        parser = argparse.ArgumentParser(prog=f"!{post_trigger}", add_help=False)
-        parser.add_argument("-n", "--number", type=int, help="Number of messages to summarize")
-        parser.add_argument("-h", "--hours", type=int, help="Number of hours to look back")
-        parser.add_argument("-m", "--minutes", type=int, help="Number of minutes to look back")
-        parser.add_argument("-d", "--days", type=int, help="Number of days to look back")
-        parser.add_argument("title", nargs='*', help="Optional title for the post")
-
-        try:
-            args_namespace = parser.parse_args(args.split() if args else [])
-        except Exception as e:
-            await evt.reply(f"Error parsing arguments: {e}")
-            return
-
-        # Extract values
-        number = args_namespace.number
-        hours = args_namespace.hours
-        minutes = args_namespace.minutes
-        days = args_namespace.days
-        title = ' '.join(args_namespace.title) if args_namespace.title else None
-
-        # Validate arguments
-        if (number and (hours or minutes or days)):
-            await evt.reply("Please specify either a number of messages (-n) or a timeframe (-h/-m/-d), not both.")
-            return
-
-        if not (number or hours or minutes or days or evt.content.get_reply_to()):
-            await evt.reply("Please reply to a message or specify either a number of messages (-n) or a timeframe (-h/-m/-d).")
-            return
-
-        # Fetch messages and check if the number of messages is less than the number requested
-        messages = []
-        if number: # Fetch messages by number meaning the number of messages to summarize
-            messages = await self.fetch_messages_by_number(evt, number)
-            if len(messages) < number:
-                await evt.reply(f"Only found {len(messages)} messages to summarize.")
-        elif hours or minutes or days:
-            total_seconds = (days or 0) * 86400 + (hours or 0) * 3600 + (minutes or 0) * 60
-            time_delta = timedelta(seconds=total_seconds)
-            messages = await self.fetch_messages_by_time(evt, time_delta)
-            if not messages:
-                await evt.reply("No messages found in the specified timeframe.")
-                return
-        else:
-            # Default to the replied-to message
-            replied_event = await evt.client.get_event(
-                evt.room_id, evt.content.get_reply_to()
-            )
-            messages = [replied_event]
-
-        if not messages:
-            await evt.reply("No messages found to summarize.")
-            return
-
-        # Combine message bodies, including the replied-to message
-        message_bodies = [event.content.body for event in reversed(messages) if hasattr(event.content, 'body')]
-        combined_message = "\n\n".join(message_bodies)
-
-        # Generate summary using AI model for multiple messages leave individuals out of summary command
-        # Generate summary using AI model for multiple messages
-        if messages:
-            if len(messages) > 1:
-                # Summarize the combined message content
-                summary = await self.ai_integration.summarize_content(combined_message)
-            else:
-                # Use the single message directly as the summary
-                #summarize the single message and add it to the content of the post above the original message
-                head_summary = await self.ai_integration.summarize_content(message_bodies[0])
-                if head_summary:
-                    # Add the summary to the content of the post above the original message
-                    summary = f"{head_summary}\n\n---\n\nOriginal Message:\n{message_bodies[0]}"
-                else:
-                    # If the summary fails, use the original message without the summary
-                    summary = message_bodies[0]
-        else:
-            # Prompt the user if no messages are found to summarize
-            await evt.reply("Please reply to a message to summarize.")
-            return
-
-        # Fallback to the combined message if summarization fails
-        if not summary:
-            self.log.warning("AI summarization failed. Falling back to the original message content.")
-            summary = combined_message
-
-        # Determine if a title is required
-        ai_model_type = self.config["ai_model_type"]
-
-        if ai_model_type == "none":
-            # If AI is set to 'none', title is required from the user
-            if not title:
-                await evt.reply(
-                    "A title is required since AI model is set to 'none'. Please provide a title."
-                )
-                return
-        else:
-            # Use provided title or generate one using the AI model
-            if not title:
-                title = await self.generate_title(summary)
-            if not title:
-                title = "Untitled Post"  # Fallback title if generation fails
-
-        self.log.info(f"Generated Title: {title}")
-
-        # Generate tags using AI model
-        tags = await self.ai_integration.generate_tags(summary)
-        if not tags:
-            tags = ["bot-post"]  # Fallback tags if generation fails
-
-        # Get the topic ID based on the room ID
-        #function to get the topic ID based on the room ID based on the config
-        if self.config["matrix_to_discourse_topic"]:
-            category_id = self.config["matrix_to_discourse_topic"].get(evt.room_id)
-        else:
-            category_id = self.config["unsorted_category_id"]
-
-        # Log the category ID being used
-        self.log.info(f"Using category ID: {category_id}")
-
-        # Create the post on Discourse
-        post_url, error = await self.discourse_api.create_post(
-            title=title,
-            raw=summary,
-            category_id=category_id,
-            tags=tags,
-        )
-        if post_url:
-            posted_link_url = f"{self.config['discourse_base_url']}/tag/posted-link"
-            # post_url should not be markdown
-            post_url = post_url.replace("[", "").replace("]", "")
-            bypass_links = generate_bypass_links(url)  # Ensure bypass links are generated
-            await evt.reply(
-                f"🔗 {title}\n"
-                f"**Forum Post URL:** {post_url}\n\n"
-                f"**Summary Preview:** {summary[:self.config['summary_length_in_characters']]}...\n\n"
-            )
-        else:
-            await evt.reply(f"Failed to create post: {error}")
-
-    async def fetch_messages_by_number(self, evt: MessageEvent, number: int) -> List[MessageEvent]:
-        """
-        Fetch up to `number` messages from this room (excluding the bot's own messages).
-        Returns a list of MessageEvent objects from newest to oldest.
-        """
-        messages = []
-        last_token: Optional[str] = None
-        limit = 100  # how many events to fetch per call
-
-        self.log.info(f"Fetching last {number} messages in room {evt.room_id}...")
-
-        while len(messages) < number:
-            try:
-                chunk = await self.client.get_room_messages(
-                    room_id=evt.room_id,
-                    from_token=last_token,
-                    direction=PaginationDirection.BACKWARD,
-                    limit=limit
-                )
-            except Exception as e:
-                self.log.error(f"Error in get_room_messages: {e}")
-                break
-
-            if not chunk.chunk:
-                break
-
-            for event in chunk.chunk:
-                if event.type == EventType.ROOM_MESSAGE and event.sender != self.client.mxid:
-                    messages.append(event)
-                    if len(messages) >= number:
-                        break
-
-            if len(chunk.chunk) < limit or not chunk.end:
-                break
-
-            last_token = chunk.end
-
-        return messages[:number]
-
-    async def fetch_messages_by_time(self, evt: MessageEvent, time_delta: timedelta) -> List[MessageEvent]:
-        """
-        Fetch all messages sent within the last `time_delta` (excluding bot's own).
-        Returns messages from newest to oldest that fall within the timeframe.
-        """
-        messages = []
-        last_token: Optional[str] = None
-        limit = 100
-        cutoff_ms = (datetime.now(tz=timezone.utc) - time_delta).timestamp() * 1000
-
-        self.log.info(f"Fetching messages in the last {time_delta} from room {evt.room_id}...")
-
-        while True:
-            try:
-                chunk = await self.client.get_room_messages(
-                    room_id=evt.room_id,
-                    from_token=last_token,
-                    direction=PaginationDirection.BACKWARD,
-                    limit=limit
-                )
-            except Exception as e:
-                self.log.error(f"Error in get_room_messages: {e}")
-                break
-
-            if not chunk.chunk:
-                break
-
-            for event in chunk.chunk:
-                if event.type == EventType.ROOM_MESSAGE and event.sender != self.client.mxid:
-                    if event.server_timestamp < cutoff_ms:
-                        return messages
-                    messages.append(event)
-
-            if len(chunk.chunk) < limit or not chunk.end:
-                break
-
-            last_token = chunk.end
-
-        return messages
-
-    async def summarize_messages_as_post(self, evt: MessageEvent,
-                                         number: Optional[int] = None,
-                                         hours: Optional[int] = None,
-                                         minutes: Optional[int] = None,
-                                         days: Optional[int] = None) -> Optional[str]:
-        """
-        Summarize either the last N messages or messages from a timeframe.
-        If no arguments are provided, fallback to the replied-to message.
-        """
-        if (number and (hours or minutes or days)):
-            await evt.reply("Please specify either a number of messages (-n) or a timeframe (-h/-m/-d), not both.")
-            return None
-        if not (number or hours or minutes or days or evt.content.get_reply_to()):
-            await evt.reply("Please reply to a message or specify a number of messages (-n) or timeframe (-h/-m/-d).")
-            return None
-
-        messages: List[MessageEvent] = []
-        if number:
-            messages = await self.fetch_messages_by_number(evt, number)
-            if not messages:
-                await evt.reply("No messages found for that count.")
-                return None
-            if len(messages) < number:
-                await evt.reply(f"Only found {len(messages)} messages to summarize.")
-        elif (hours or minutes or days):
-            total_seconds = (days or 0) * 86400 + (hours or 0) * 3600 + (minutes or 0) * 60
-            time_delta = timedelta(seconds=total_seconds)
-            messages = await self.fetch_messages_by_time(evt, time_delta)
-            if not messages:
-                await evt.reply("No messages found in the specified timeframe.")
-                return None
-        else:
-            replied_id = evt.content.get_reply_to()
-            if not replied_id:
-                await evt.reply("No messages found to summarize.")
-                return None
-            replied_event = await evt.client.get_event(evt.room_id, replied_id)
-            messages = [replied_event] if replied_event else []
-
-        if not messages:
-            await evt.reply("No messages found to summarize.")
-            return None
-
-        messages.reverse()
-        combined_text = "\n\n".join(
-            evt.content.body for evt in messages if hasattr(evt.content, 'body')
-        )
-
-        summary = await self.ai_integration.summarize_content(combined_text)
-        if not summary:
-            self.log.warning("AI summarization returned empty or failed; falling back to raw text.")
-            summary = combined_text
-
-        return summary
-
-    # Function to generate title for bypassed links
-    async def generate_title_for_bypassed_links(self, message_body: str) -> Optional[str]:
-        # Remove the use_links_prompt parameter since generate_links_title doesn't accept it
-        return await self.ai_integration.generate_links_title(message_body)
-    
-    # Function to generate title
-    async def generate_title(self, message_body: str) -> Optional[str]:
-        return await self.ai_integration.generate_title(message_body, use_links_prompt=False)
-
-    # Command to search the discourse
-    @command.new(name=lambda self: self.config["search_trigger"], require_subcommand=False)
-    @command.argument("query", pass_raw=True, required=True)
-    async def search_discourse_command(self, evt: MessageEvent, query: str) -> None:
-        await self.handle_search_discourse(evt, query)
-
     async def handle_search_discourse(self, evt: MessageEvent, query: str) -> None:
-        self.log.info(f"Command !{self.config['search_trigger']} triggered.")
+        search_trigger = self.config.get("search_trigger", "search")
+        self.log.info(f"Command !{search_trigger} triggered.")
         await evt.reply("Searching the forum and wiki...")
 
         try:
@@ -1760,32 +1701,57 @@ class MatrixToDiscourseBot(Plugin):
             await self.process_link(evt, message_body)
 
     # Command to process URLs in replies
-    @command.new(name=lambda self: self.config["url_post_trigger"], require_subcommand=False)
+    @command.new(name=lambda self: self.config.get("url_post_trigger", "url"), require_subcommand=False)
     async def post_url_to_discourse_command(self, evt: MessageEvent) -> None:
         await self.handle_post_url_to_discourse(evt)
 
     async def handle_post_url_to_discourse(self, evt: MessageEvent) -> None:
-        self.log.info(f"Command !{self.config['url_post_trigger']} triggered.")
+        self.log.info(f"Command !{self.config.get('url_post_trigger', 'url')} triggered.")
 
-        if not evt.content.get_reply_to():
+        relation = evt.content.get_reply_to()
+        if not relation:
             await evt.reply("You must reply to a message containing a URL to use this command.")
             return
 
-        replied_event = await evt.client.get_event(
-            evt.room_id, evt.content.get_reply_to()
-        )
-        message_body = replied_event.content.body
+        # Log the relation object for debugging
+        self.log.debug(f"Relation object: {relation}")
+        self.log.debug(f"Relation inspection: {self.inspect_relation_object(relation)}")
 
-        if not message_body:
-            await evt.reply("The replied-to message is empty.")
+        # Extract the event ID from the relation object
+        replied_event_id = await self.extract_event_id_from_relation(relation)
+        if not replied_event_id:
+            await evt.reply("Could not identify the message you're replying to.")
             return
 
-        urls = extract_urls(message_body)
-        if not urls:
-            await evt.reply("No URLs found in the replied message.")
-            return
+        try:
+            self.log.debug(f"Fetching event with ID: {replied_event_id}")
+            replied_event = await evt.client.get_event(evt.room_id, replied_event_id)
+            
+            if not replied_event:
+                self.log.warning(f"Could not fetch event with ID: {replied_event_id}")
+                await evt.reply("Could not fetch the message you're replying to.")
+                return
+                
+            if not hasattr(replied_event, 'content') or not hasattr(replied_event.content, 'body'):
+                self.log.warning(f"Event has no content or body: {replied_event}")
+                await evt.reply("The message you're replying to has no content.")
+                return
+                
+            message_body = replied_event.content.body
 
-        await self.process_link(evt, message_body)
+            if not message_body:
+                await evt.reply("The replied-to message is empty.")
+                return
+
+            urls = extract_urls(message_body)
+            if not urls:
+                await evt.reply("No URLs found in the replied message.")
+                return
+
+            await self.process_link(evt, message_body)
+        except Exception as e:
+            self.log.error(f"Error processing replied event: {e}", exc_info=True)
+            await evt.reply(f"Error processing the replied message. Please check the logs for details.")
         
     async def process_link(self, evt: MessageEvent, message_body: str) -> None:
         urls = extract_urls(message_body)
@@ -1885,12 +1851,34 @@ class MatrixToDiscourseBot(Plugin):
                 f"For more on bypassing paywalls, see the [post on bypassing methods](https://forum.irregularchat.com/t/bypass-links-and-methods/98?u=sac)"
             )
 
-            # Determine category ID based on room ID
-            category_id = self.config["matrix_to_discourse_topic"].get(evt.room_id, self.config["unsorted_category_id"])
-
-            # Log the category ID being used
-            self.log.info(f"Using category ID: {category_id}")
-            self.log.info(f"Final tags being used: {tags}")
+            # Determine category ID based on room ID using the safe_config_get helper
+            try:
+                # Get the mapping dictionary with a default empty dict
+                matrix_to_discourse_topic = self.config.get("matrix_to_discourse_topic", {})
+                
+                # Get the unsorted category ID with a default value
+                unsorted_category_id = self.config.get("unsorted_category_id", 1)  # Default to category ID 1 if not set
+                
+                # Get the category ID for this room with the unsorted category ID as default
+                if isinstance(matrix_to_discourse_topic, dict):
+                    # Regular dict
+                    category_id = matrix_to_discourse_topic.get(evt.room_id, unsorted_category_id)
+                else:
+                    # RecursiveDict or other object with get method
+                    try:
+                        category_id = matrix_to_discourse_topic.get(evt.room_id, unsorted_category_id)
+                    except TypeError:
+                        # If the get method requires more arguments, try with a default value
+                        self.log.debug("RecursiveDict detected for matrix_to_discourse_topic, using default value")
+                        category_id = unsorted_category_id
+                    
+                self.log.info(f"Using category ID: {category_id}")
+                self.log.info(f"Final tags being used: {tags}")
+            except Exception as e:
+                self.log.error(f"Error determining category ID: {e}", exc_info=True)
+                # Default to a safe value if we can't determine the category ID
+                category_id = 1  # Default to category ID 1
+                self.log.info(f"Using default category ID: {category_id}")
 
             # Create the post on Discourse
             post_url, error = await self.discourse_api.create_post(
@@ -1901,13 +1889,27 @@ class MatrixToDiscourseBot(Plugin):
             )
 
             if post_url:
-                posted_link_url = f"{self.config['discourse_base_url']}/tag/posted-link"
+                # Extract topic ID from the post URL
+                topic_id = post_url.split("/")[-1]
+                # Store the mapping between Matrix message ID and Discourse topic ID
+                self.message_id_map[evt.event_id] = topic_id
+                self.log.info(f"Stored mapping: Matrix ID {evt.event_id} -> Discourse topic {topic_id}")
+                
+                posted_link_url = f"{self.discourse_api.base_url}/tag/posted-link"
                 # post_url should not be markdown
                 post_url = post_url.replace("[", "").replace("]", "")
+                
+                # Get summary length with a safe default
+                summary_length = self.config.get("summary_length_in_characters", 200)
+                
+                # Get the URL post trigger for the reply instruction
+                url_post_trigger = self.config.get("url_post_trigger", "furl")
+                
                 await evt.reply(
                     f"🔗 {title}\n\n"
                     f"**Forum Post URL:** {post_url}\n\n"
-                    f"{summary[:self.config['summary_length_in_characters']]}...\n\n"
+                    f"{summary[:summary_length]}...\n\n"
+                    f"_Reply to this message to add your comment to the forum post._"
                 )
             else:
                 await evt.reply(f"Failed to create post: {error}")
@@ -1965,3 +1967,376 @@ class MatrixToDiscourseBot(Plugin):
         
         self.log.error("All candidate URLs failed for MediaWiki search.")
         return None
+
+    @event.on(EventType.ROOM_MESSAGE)
+    async def handle_matrix_reply(self, evt: MessageEvent) -> None:
+        """
+        Handle Matrix replies and post them to Discourse as replies.
+        
+        This method checks if a message is a reply to a previously posted message
+        that has a corresponding Discourse topic. If so, it posts the reply content
+        to that Discourse topic.
+        """
+        try:
+            # Ignore messages from the bot itself
+            if evt.sender == self.client.mxid:
+                return
+            
+            # Check if message is a reply
+            relation = evt.content.get_reply_to()
+            if not relation:
+                return  # Not a reply
+            
+            # Log the relation object for debugging
+            self.log.debug(f"Matrix reply - Relation object: {relation}")
+            self.log.debug(f"Matrix reply - Relation inspection: {self.inspect_relation_object(relation)}")
+            
+            # Get the event ID of the message being replied to
+            replied_event_id = await self.extract_event_id_from_relation(relation)
+            if not replied_event_id:
+                self.log.warning(f"Could not extract event ID from relation: {relation}")
+                return
+            
+            # Log the relation and event ID for debugging
+            self.log.debug(f"Matrix reply - Relation: {relation}, type: {type(relation)}")
+            self.log.debug(f"Matrix reply - Extracted replied_event_id: {replied_event_id}")
+            
+            # Check if we have a mapping for this message ID
+            discourse_topic_id = self.message_id_map.get(replied_event_id)
+            
+            # If we don't have a direct mapping, check if this is a reply to a bot message
+            # that contains a forum link (which would be a reply to a previous post)
+            if not discourse_topic_id:
+                self.log.debug(f"No direct mapping found for {replied_event_id}, checking if it's a reply to a bot message")
+                
+                # Try to get the original message to see if it's from the bot and contains a forum link
+                try:
+                    replied_event = await self.client.get_event(evt.room_id, replied_event_id)
+                    if replied_event and replied_event.sender == self.client.mxid:
+                        # This is a reply to a bot message, extract the topic ID from the message content
+                        content = replied_event.content.body
+                        # Look for a Discourse URL pattern in the bot's message
+                        discourse_base_url = self.config.get("discourse_base_url", "")
+                        if discourse_base_url and discourse_base_url in content:
+                            # Extract the topic ID from the URL
+                            url_pattern = f"{discourse_base_url}/t/[^/]+/(\\d+)"
+                            match = re.search(url_pattern, content)
+                            if match:
+                                discourse_topic_id = match.group(1)
+                                self.log.info(f"Found topic ID {discourse_topic_id} in bot message")
+                except Exception as e:
+                    self.log.warning(f"Error checking replied message: {e}")
+            
+            if not discourse_topic_id:
+                self.log.debug(f"No Discourse topic found for Matrix message ID: {replied_event_id}")
+                return
+            
+            # Get the content of the reply
+            reply_content = evt.content.body
+            
+            # Remove the quoted part if present (common in Matrix clients)
+            if ">" in reply_content:
+                # Split by lines and remove those starting with >
+                lines = reply_content.split("\n")
+                non_quoted_lines = [line for line in lines if not line.strip().startswith(">")]
+                reply_content = "\n".join(non_quoted_lines).strip()
+            
+            # If after removing quotes there's no content, ignore
+            if not reply_content:
+                self.log.debug("Reply contains only quotes, ignoring")
+                return
+            
+            # Try to get the user's display name
+            try:
+                user_profile = await self.client.get_profile(evt.sender)
+                display_name = user_profile.displayname if user_profile and user_profile.displayname else "a community member"
+            except Exception as e:
+                self.log.warning(f"Could not get display name for {evt.sender}: {e}")
+                display_name = "a community member"
+            
+            # Format the reply for Discourse
+            formatted_reply = f"**Matrix reply from {display_name}**:\n\n{reply_content}"
+            
+            # Post the reply to Discourse
+            self.log.info(f"Posting reply to Discourse topic {discourse_topic_id}")
+            post_url, error = await self.discourse_api.create_post(
+                title=None,  # No title needed for replies
+                raw=formatted_reply,
+                category_id=None,  # Not needed for replies
+                tags=None,  # Not needed for replies
+                topic_id=discourse_topic_id  # Specify the topic to reply to
+            )
+            
+            if error:
+                self.log.error(f"Failed to post reply to Discourse: {error}")
+            else:
+                self.log.info(f"Successfully posted reply to Discourse: {post_url}")
+                await evt.react("✅")  # React to indicate success
+        except Exception as e:
+            self.log.error(f"Error in handle_matrix_reply: {e}", exc_info=True)
+
+    @command.new(name="save-mappings", require_subcommand=False)
+    async def save_mappings_command(self, evt: MessageEvent) -> None:
+        """Command to manually save the message ID mapping."""
+        # Only allow admins to use this command
+        if not await self.is_admin(evt.sender):
+            await evt.reply("You don't have permission to use this command.")
+            return
+        
+        await self.save_message_id_map()
+        await evt.reply(f"Message ID mapping saved with {len(self.message_id_map)} entries.")
+
+    async def is_admin(self, user_id: str) -> bool:
+        """Check if a user is an admin."""
+        admins = self.config.get("admins", [])
+        self.log.debug(f"Checking if {user_id} is in admins list: {admins}")
+        return user_id in admins
+
+    async def generate_title_for_bypassed_links(self, message_body: str) -> Optional[str]:
+        """
+        Generate a title for bypassed links.
+        
+        Args:
+            message_body (str): The message body to generate a title from
+            
+        Returns:
+            Optional[str]: The generated title, or None if generation fails
+        """
+        return await self.ai_integration.generate_links_title(message_body)
+
+    async def generate_title(self, message_body: str) -> Optional[str]:
+        """
+        Generate a title for a message.
+        
+        Args:
+            message_body (str): The message body to generate a title from
+            
+        Returns:
+            Optional[str]: The generated title, or None if generation fails
+        """
+        return await self.ai_integration.generate_title(message_body, use_links_prompt=False)
+
+    @command.new(name="list-mappings", require_subcommand=False)
+    async def list_mappings_command(self, evt: MessageEvent) -> None:
+        """Command to list the current message ID mappings."""
+        # Only allow admins to use this command
+        if not await self.is_admin(evt.sender):
+            await evt.reply("You don't have permission to use this command.")
+            return
+        
+        if not self.message_id_map:
+            await evt.reply("No message ID mappings found.")
+            return
+        
+        # Format the mappings for display
+        mappings = []
+        for matrix_id, discourse_id in list(self.message_id_map.items())[:10]:  # Limit to 10 entries
+            mappings.append(f"Matrix ID: {matrix_id} -> Discourse Topic: {discourse_id}")
+        
+        total = len(self.message_id_map)
+        shown = min(10, total)
+        
+        message = f"Message ID Mappings ({shown} of {total} shown):\n\n" + "\n".join(mappings)
+        if total > 10:
+            message += f"\n\n... and {total - 10} more."
+        
+        await evt.reply(message)
+
+    @command.new(name="clear-mappings", require_subcommand=False)
+    async def clear_mappings_command(self, evt: MessageEvent) -> None:
+        """Command to clear all message ID mappings."""
+        # Only allow admins to use this command
+        if not await self.is_admin(evt.sender):
+            await evt.reply("You don't have permission to use this command.")
+            return
+        
+        # Ask for confirmation
+        await evt.reply("Are you sure you want to clear all message ID mappings? This cannot be undone. Reply with 'yes' to confirm.")
+        
+        # Wait for confirmation
+        try:
+            response = await self.client.wait_for_event(
+                EventType.ROOM_MESSAGE,
+                room_id=evt.room_id,
+                sender=evt.sender,
+                timeout=60000  # 60 seconds
+            )
+            
+            if response.content.body.lower() == "yes":
+                # Clear the mappings
+                count = len(self.message_id_map)
+                self.message_id_map.clear()
+                await self.save_message_id_map()
+                await evt.reply(f"Cleared {count} message ID mappings.")
+            else:
+                await evt.reply("Operation cancelled.")
+        except asyncio.TimeoutError:
+            await evt.reply("Confirmation timed out. Operation cancelled.")
+
+    async def extract_event_id_from_relation(self, relation) -> Optional[str]:
+        """
+        Extract the event ID from a relation object.
+        
+        Args:
+            relation: The relation object from evt.content.get_reply_to()
+            
+        Returns:
+            Optional[str]: The event ID if found, None otherwise
+        """
+        if not relation:
+            self.log.debug("Relation is None")
+            return None
+        
+        self.log.debug(f"Extracting event ID from relation: {relation} (type: {type(relation)})")
+        
+        # Log detailed inspection of the relation object
+        inspection = self.inspect_relation_object(relation)
+        self.log.debug(f"Relation inspection:\n{inspection}")
+        
+        # Handle different relation object structures
+        if hasattr(relation, 'event_id'):
+            # Object-style relation
+            event_id = relation.event_id
+            self.log.debug(f"Found event_id attribute: {event_id}")
+            return event_id
+        elif isinstance(relation, str):
+            # String-style relation (direct event ID)
+            self.log.debug(f"Relation is a string: {relation}")
+            return relation
+        else:
+            # Try to access as dictionary
+            try:
+                # Try attribute access first
+                if hasattr(relation, 'event_id'):
+                    event_id = relation.event_id
+                    self.log.debug(f"Found event_id attribute: {event_id}")
+                    return event_id
+                
+                # Try dictionary access
+                if isinstance(relation, dict) and 'event_id' in relation:
+                    event_id = relation['event_id']
+                    self.log.debug(f"Found event_id key: {event_id}")
+                    return event_id
+                
+                # Try get method - handle RecursiveDict specifically
+                if hasattr(relation, 'get'):
+                    try:
+                        # For RecursiveDict, we need to provide a default value
+                        event_id = relation.get('event_id', None)
+                        if event_id:
+                            self.log.debug(f"Found event_id via get method: {event_id}")
+                            return event_id
+                    except TypeError as e:
+                        # If the get method requires more arguments, try with a default value
+                        if "missing 1 required positional argument" in str(e):
+                            self.log.debug("RecursiveDict detected, trying with default value")
+                            try:
+                                event_id = relation.get('event_id', None)
+                                if event_id:
+                                    self.log.debug(f"Found event_id via get method with default: {event_id}")
+                                    return event_id
+                            except Exception as inner_e:
+                                self.log.warning(f"Error using get method with default: {inner_e}")
+                        else:
+                            raise
+                
+                # Check for m.in_reply_to structure (Matrix spec)
+                if hasattr(relation, 'm.in_reply_to') or (isinstance(relation, dict) and 'm.in_reply_to' in relation):
+                    try:
+                        # Try to get m.in_reply_to safely
+                        if hasattr(relation, 'get'):
+                            try:
+                                in_reply_to = relation.get('m.in_reply_to', None)
+                            except TypeError:
+                                # RecursiveDict requires default value
+                                in_reply_to = relation.get('m.in_reply_to', None)
+                        else:
+                            in_reply_to = relation.get('m.in_reply_to')
+                        
+                        if in_reply_to and isinstance(in_reply_to, dict) and 'event_id' in in_reply_to:
+                            event_id = in_reply_to['event_id']
+                            self.log.debug(f"Found event_id in m.in_reply_to: {event_id}")
+                            return event_id
+                    except Exception as e:
+                        self.log.warning(f"Error accessing m.in_reply_to: {e}")
+                
+                # If we get here, we couldn't find the event ID
+                self.log.warning(f"Could not extract event ID from relation: {relation} (type: {type(relation)})")
+                return None
+            except (AttributeError, TypeError) as e:
+                self.log.warning(f"Error extracting event ID from relation: {e}")
+                return None
+
+    def inspect_relation_object(self, relation) -> str:
+        """
+        Inspect the structure of a relation object for debugging purposes.
+        
+        Args:
+            relation: The relation object to inspect
+            
+        Returns:
+            str: A string representation of the relation object structure
+        """
+        if relation is None:
+            return "None"
+            
+        result = []
+        result.append(f"Type: {type(relation)}")
+        
+        # Check if it's a string
+        if isinstance(relation, str):
+            return f"String: {relation}"
+        
+        # Check for attributes
+        if hasattr(relation, '__dict__'):
+            try:
+                result.append(f"Attributes: {relation.__dict__}")
+            except Exception as e:
+                result.append(f"Error accessing __dict__: {e}")
+        
+        # Check for dictionary-like behavior
+        if isinstance(relation, dict):
+            try:
+                result.append(f"Dictionary keys: {list(relation.keys())}")
+            except Exception as e:
+                result.append(f"Error accessing keys: {e}")
+        
+        # Check for specific attributes
+        for attr in ['event_id', 'rel_type', 'in_reply_to', 'm.in_reply_to']:
+            try:
+                if hasattr(relation, attr):
+                    result.append(f"Has attribute '{attr}': {getattr(relation, attr)}")
+                elif isinstance(relation, dict) and attr in relation:
+                    result.append(f"Has key '{attr}': {relation[attr]}")
+            except Exception as e:
+                result.append(f"Error checking attribute '{attr}': {e}")
+        
+        # Check for methods
+        for method in ['get', 'keys', 'values', 'items']:
+            try:
+                if hasattr(relation, method) and callable(getattr(relation, method)):
+                    result.append(f"Has method '{method}'")
+                    
+                    # Try to call the method if it's 'get'
+                    if method == 'get':
+                        try:
+                            # Try calling get with a key and default value
+                            result.append(f"Testing get method: relation.get('event_id', None) = {relation.get('event_id', None)}")
+                        except Exception as e:
+                            result.append(f"Error calling get method: {e}")
+            except Exception as e:
+                result.append(f"Error checking method '{method}': {e}")
+        
+        # Check if it's a RecursiveDict (common in Matrix)
+        if 'RecursiveDict' in str(type(relation)):
+            result.append("Detected RecursiveDict (requires default value for get method)")
+            
+            # Try to access some common keys safely
+            for key in ['event_id', 'rel_type', 'm.in_reply_to']:
+                try:
+                    value = relation.get(key, None)
+                    result.append(f"RecursiveDict.get('{key}', None) = {value}")
+                except Exception as e:
+                    result.append(f"Error accessing RecursiveDict key '{key}': {e}")
+        
+        return "\n".join(result)
