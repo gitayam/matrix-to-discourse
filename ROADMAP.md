@@ -41,6 +41,8 @@ Thanks for checking out the roadmap for the Matrix to Discourse Bot! This docume
 - [x] Relay Matrix messages to Discourse as a post reply. 
 
 ## Roadmap
+- [ ] Direct message support (working on)
+    - [ ] Direct message user with the post link as well
 
 - [ ] Enhanced Post Summarization Functionality.(working on) (Branch: Multiple-Message-Summaries) 
     - [ ] Implement `!fpost -n <number>` to summarize the last `<number>` messages into a post.
@@ -56,5 +58,3 @@ Thanks for checking out the roadmap for the Matrix to Discourse Bot! This docume
     - [ ] Based on the user's role in the Matrix room.
     - [ ] Based on User ID.
     - [ ] Based on homeserver.
-- [ ] Direct message support
-    - [ ] Direct message user with the post link as well
