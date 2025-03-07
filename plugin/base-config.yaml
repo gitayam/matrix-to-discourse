@@ -99,8 +99,8 @@ google:
 #   - https?://.*\.(jpg|jpeg|png|gif|webp)$    # Images
 
 # Default is false, set to true to enable URL listening. furl will still work even if this is false.
-url_listening: false
-summary_length_in_characters: 140
+url_listening: true
+summary_length_in_characters: 280
 url_patterns:
   - https?://.*  # Match all URLs
 # Match URLs regular expressions that should not be posted
@@ -118,6 +118,8 @@ url_blacklist:
   - https?://(www\.)?instagram\.com/.*
   - https?://(www\.)?tiktok\.com/.*
   - https?://(www\.)?facebook\.com/.*
+  - https?://(www\.)?pinterest\.com/.*
+  - https?://(www\.)?linkedin\.com/.*
   - https://u\.pcloud\.link/publink/show\?code=[a-zA-Z0-9]+
   - https?://(www\.)?mega\.nz/.*
   - https?://(www\.)?mediafire\.com/.*
