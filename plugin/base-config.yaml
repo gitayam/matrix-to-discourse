@@ -13,6 +13,7 @@ discourse_api_username: "discourse_api_username"
 discourse_base_url: "https://discourse.example.com"
 
 ###### MediaWiki Configuration ######
+# replace "wikipedia.org" with your MediaWiki URL
 mediawiki_base_url: "https://wikipedia.org"
 
 # To get your category ID, go to https://discourse.example.com/c/your-category-name.json
@@ -43,18 +44,29 @@ openai:
 
 ###### Local LLM Configuration ######
 # Use these settings if ai_model_type is set to "local"
-# Note: This could be a locally running model or a model accessed via a local server like Ollama
 local_llm:
-  # For a local model file:
-  # model_path is typically a file with a .gguf extension
+  # Connection type: "api" or "file" - determines how to access the model
+  connection_type: "api"
+  
+  # API configuration (used when connection_type is "api")
+  api_endpoint: "https://domain.com/api/chat"
+  
+  # API request format: "openai" (OpenAI-compatible) or "custom" (custom format)
+  api_format: "openai"
+  
+  # File configuration (used when connection_type is "file")
   model_path: "/path/to/your/local/model"
-  # For a local server (e.g., Ollama):
-  # api_endpoint: "http://localhost:11434/api/chat"
-  # model: "llama2"
-  # Add any other necessary configuration for your local LLM
-  # For example:
-  # max_tokens: 3000
-  # temperature: 1
+  
+  # Model and generation parameters (used for both connection types)
+  model: "gemma-2-2b-it"
+  max_tokens: 2048
+  temperature: 0.7
+  
+  # Optional additional parameters
+  top_p: 0.9
+  # frequency_penalty: 0.0
+  # presence_penalty: 0.0
+  # stop_sequences: ["\n\n", "###"]
 
 ###### Google Gemini Configuration ######
 # Use these settings if ai_model_type is set to "google"
@@ -99,7 +111,7 @@ google:
 #   - https?://.*\.(jpg|jpeg|png|gif|webp)$    # Images
 
 # Default is false, set to true to enable URL listening. furl will still work even if this is false.
-url_listening: false
+url_listening: true
 summary_length_in_characters: 280
 url_patterns:
   - https?://.*  # Match all URLs
@@ -134,5 +146,3 @@ url_blacklist:
   - https?://(www\.)?drive\.amazon\.com/.*
   - https?://(www\.)?drive\.yandex\.com/.*
   - https?://(www\.)?drive\.yahoo\.com/.*
-
-  
