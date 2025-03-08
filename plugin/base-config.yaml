@@ -49,7 +49,7 @@ local_llm:
   connection_type: "api"
   
   # API configuration (used when connection_type is "api")
-  api_endpoint: "https://domain.com/api/chat"
+  api_endpoint: "https://domain.com/v1/chat/completions"
   
   # API request format: "openai" (OpenAI-compatible) or "custom" (custom format)
   api_format: "openai"
