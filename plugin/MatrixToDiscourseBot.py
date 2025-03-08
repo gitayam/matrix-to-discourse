@@ -1,3 +1,4 @@
+# MatrixToDiscourseBot.py is the main file for the MatrixToDiscourseBot plugin.
 import asyncio
 import json
 import re
@@ -10,7 +11,6 @@ from typing import Type, Dict, List, Optional
 from urllib.parse import urlparse
 import random
 import os
-
 from mautrix.client import Client
 from mautrix.types import (
     Format,
@@ -155,20 +155,38 @@ class Config(BaseProxyConfig):
                 try:
                     return self.config.get(key, default)
                 except TypeError:
-                    # If the get method requires more arguments, try with a default value
-                    self.log.debug(f"RecursiveDict detected for key {key}, using default value: {default}")
+                    # RecursiveDict detected, using default value
                     try:
                         return self.config.get(key, default)
                     except Exception as e:
-                        self.log.warning(f"Error using get method with default for key {key}: {e}")
+                        logger.warning(f"Error using get method with default for key {key}: {e}")
                         return default
             elif isinstance(self.config, dict) and key in self.config:
                 return self.config[key]
             else:
                 return default
         except Exception as e:
-            self.log.warning(f"Error getting config value for key {key}: {e}")
+            logger.warning(f"Error getting config value for key {key}: {e}")
             return default
+
+    def validate_config(self):
+        """Validate critical configuration parameters."""
+        critical_params = [
+            ("discourse_base_url", "Discourse base URL"),
+            ("discourse_api_key", "Discourse API key"),
+            ("discourse_api_username", "Discourse API username"),
+        ]
+        
+        missing = []
+        for param, desc in critical_params:
+            if not self.config.get(param):
+                missing.append(desc)
+        
+        if missing:
+            self.logger.error(f"Missing critical configuration: {', '.join(missing)}")
+            return False
+        
+        return True
 
 # AIIntegration class
 class AIIntegration:
@@ -178,10 +196,30 @@ class AIIntegration:
     """
     def __init__(self, config, log):
         self.config = config
-        self.log = log
+        self.logger = log  # Change logger to self.logger
         self.target_audience = config.get("target_audience", "community members")
-        # Initialize Discourse API self 
-        self.discourse_api = DiscourseAPI(self.config, self.log)
+        # Initialize Discourse API
+        self.discourse_api = DiscourseAPI(self.config, log)  # Pass log directly
+
+    def clean_markdown_from_title(self, title: str) -> str:
+        """Remove markdown formatting from a title."""
+        if not title:
+            return title
+            
+        # Remove markdown headers (# Header)
+        title = re.sub(r'^#+\s+', '', title)
+        
+        # Remove markdown bold/italic (**bold**, *italic*)
+        title = re.sub(r'\*\*(.*?)\*\*', r'\1', title)
+        title = re.sub(r'\*(.*?)\*', r'\1', title)
+        
+        # Remove markdown links ([text](url))
+        title = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', title)
+        
+        # Remove backticks (`code`)
+        title = re.sub(r'`(.*?)`', r'\1', title)
+        
+        return title.strip()
 
     async def generate_title(self, message_body: str, use_links_prompt: bool = False) -> Optional[str]:
         ai_model_type = self.config.get("ai_model_type", "none")
@@ -193,7 +231,7 @@ class AIIntegration:
         elif ai_model_type == "google":
             return await self.generate_google_title(message_body, use_links_prompt)
         else:
-            self.log.error(f"Unknown AI model type: {ai_model_type}")
+            self.logger.error(f"Unknown AI model type: {ai_model_type}")
             return None
     #generate_links_title
     async def generate_links_title(self, message_body: str) -> Optional[str]:
@@ -208,12 +246,18 @@ class AIIntegration:
         elif ai_model_type == "google":
             return await self.generate_google_title(prompt, True)
         else:
-            self.log.error(f"Unknown AI model type: {ai_model_type}")
+            self.logger.error(f"Unknown AI model type: {ai_model_type}")
             return None
 
     async def summarize_content(self, content: str, user_message: str = "") -> Optional[str]:
-        prompt = f"""Summarize the following content, including any user-provided context or quotes. If there isn't enough information, please just say 'Not Enough Information to Summarize':\n\nContent:\n{content}\n\nUser Message:\n{user_message}"""
-        ai_model_type = self.config["ai_model_type"]
+        # If this is a prompt for key points, exactly 5 key points, or a specific summary format, use it directly
+        if "bullet point format" in content or "concise summary" in content or "maximum 300 words" in content or "exactly 5 key points" in content:
+            prompt = content
+        else:
+            # Otherwise, use the standard summary prompt
+            prompt = f"""Summarize the following content, including any user-provided context or quotes. If there isn't enough information, please just say 'Not Enough Information to Summarize':\n\nContent:\n{content}\n\nUser Message:\n{user_message}"""
+        
+        ai_model_type = self.config.get("ai_model_type", "none")
         if ai_model_type == "openai":
             return await self.summarize_with_openai(prompt)
         elif ai_model_type == "local":
@@ -221,10 +265,10 @@ class AIIntegration:
         elif ai_model_type == "google":
             return await self.summarize_with_google(prompt)
         else:
-            self.log.error(f"Unknown AI model type: {ai_model_type}")
+            logger.error(f"Unknown AI model type: {ai_model_type}")
             return None
     #generate_openai_tags
-    TAG_PROMPT = """Analyze the following content and suggest 2-5 relevant tags {user_message}.  
+    TAG_PROMPT = """Analyze the following content and suggest 2-4 relevant tags {user_message}.  
         NOW Choose from or be inspired by these existing tags: {tag_list}
         If none of the existing tags fit well, suggest new related tags.
         The tags should be lowercase, use hyphens instead of spaces, and be concise.       
@@ -234,22 +278,22 @@ class AIIntegration:
     async def generate_tags(self, user_message: str = "") -> Optional[List[str]]:
         try:
             if not self.discourse_api:
-                self.log.error("Discourse API is not initialized.")
+                self.logger.error("Discourse API is not initialized.")
                 return ["posted-link"]  # Return default tag instead of None
 
             # Get existing tags from Discourse for context
             all_tags = await self.discourse_api.get_all_tags()
             if all_tags is None:
-                self.log.error("Failed to fetch tags from Discourse API.")
+                self.logger.error("Failed to fetch tags from Discourse API.")
                 return ["posted-link"]  # Return default tag
 
             # Log the type and content of all_tags for debugging
-            self.log.debug(f"Type of all_tags: {type(all_tags)}")
-            self.log.debug(f"Content of all_tags: {all_tags}")
+            self.logger.debug(f"Type of all_tags: {type(all_tags)}")
+            self.logger.debug(f"Content of all_tags: {all_tags}")
 
             # Check if all_tags is a list and contains dictionaries
             if not isinstance(all_tags, list) or not all(isinstance(tag, dict) for tag in all_tags):
-                self.log.error("Unexpected format for all_tags. Expected a list of dictionaries.")
+                self.logger.error("Unexpected format for all_tags. Expected a list of dictionaries.")
                 return ["posted-link"]  # Return default tag
 
             tag_names = [tag["name"] for tag in all_tags]
@@ -262,7 +306,7 @@ class AIIntegration:
                 try:
                     api_key = self.config.get('openai.api_key', None)
                     if not api_key:
-                        self.log.error("OpenAI API key is not configured.")
+                        self.logger.error("OpenAI API key is not configured.")
                         return ["posted-link"]  # Return default tag
 
                     headers = {
@@ -283,7 +327,7 @@ class AIIntegration:
                             try:
                                 response_json = json.loads(response_text)
                             except json.JSONDecodeError as e:
-                                self.log.error(f"Error decoding OpenAI response: {e}\nResponse text: {response_text}")
+                                self.logger.error(f"Error decoding OpenAI response: {e}\nResponse text: {response_text}")
                                 return ["posted-link"]  # Return default tag
 
                             if response.status == 200:
@@ -304,11 +348,11 @@ class AIIntegration:
                                     return ["posted-link"]
                                 return tags
                             else:
-                                self.log.error(f"OpenAI API error: {response.status} {response_json}")
+                                self.logger.error(f"OpenAI API error: {response.status} {response_json}")
                                 return ["posted-link"]  # Return default tag
                 except Exception as e:
                     tb = traceback.format_exc()
-                    self.log.error(f"Error generating tags with OpenAI: {e}\n{tb}")
+                    self.logger.error(f"Error generating tags with OpenAI: {e}\n{tb}")
                     return ["posted-link"]  # Return default tag
 
             elif self.config["ai_model_type"] == "local":
@@ -316,9 +360,11 @@ class AIIntegration:
                     "Content-Type": "application/json"
                 }
                 
+                # Use OpenAI-compatible format
                 data = {
-                    "prompt": prompt,
-                    "max_tokens": self.config.get("local_llm.max_tokens", 100),
+                    "model": self.config.get("local_llm.model", "gemma-2-2b-it"),
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": min(self.config.get("local_llm.max_tokens", 500), 1000),  # Limit to 1000 tokens
                     "temperature": self.config.get("local_llm.temperature", 0.7),
                 }
 
@@ -328,35 +374,38 @@ class AIIntegration:
                         try:
                             response_json = json.loads(response_text)
                         except json.JSONDecodeError as e:
-                            self.log.error(f"Error decoding Local LLM response: {e}\nResponse text: {response_text}")
+                            self.logger.error(f"Error decoding Local LLM response: {e}\nResponse text: {response_text}")
                             return ["posted-link"]  # Return default tag
 
                         if response.status == 200:
-                            tags_text = response_json.get("text", "").strip()
-                            tags = [tag.strip().lower().replace(' ', '-') for tag in tags_text.split(',')]
-                            # Filter out invalid tags
-                            tags = [tag for tag in tags if tag and re.match(r'^[a-z0-9\-]+$', tag)]
-                            tags = tags[:5]  # Limit to 5 tags
-                            
-                            # Always include posted-link tag
-                            if "posted-link" not in tags:
-                                tags.append("posted-link")
-                            
-                            # Limit to 5 tags maximum (including posted-link)
-                            tags = tags[:5]
-                            
-                            # Ensure we have at least one tag
-                            if not tags:
-                                return ["posted-link"]
-                            return tags
+                            # Handle OpenAI-compatible format
+                            if "choices" in response_json and len(response_json["choices"]) > 0:
+                                if "message" in response_json["choices"][0]:
+                                    tags_text = response_json["choices"][0]["message"]["content"].strip()
+                                    tags = [tag.strip().lower().replace(' ', '-') for tag in tags_text.split(',')]
+                                    # Filter out invalid tags
+                                    tags = [tag for tag in tags if tag and re.match(r'^[a-z0-9\-]+$', tag)]
+                                    
+                                    # Always include posted-link tag
+                                    if "posted-link" not in tags:
+                                        tags.append("posted-link")
+                                    
+                                    # Limit to 5 tags maximum (including posted-link)
+                                    tags = tags[:5]
+                                    
+                                    # Ensure we have at least one tag
+                                    if not tags:
+                                        return ["posted-link"]
+                                    return tags
+                            return ["posted-link"]  # Return default tag if no valid response
                         else:
-                            self.log.error(f"Local LLM API error: {response.status} {response_json}")
+                            self.logger.error(f"Local LLM API error: {response.status} {response_json}")
                             return ["posted-link"]  # Return default tag
 
-            elif self.config["ai_model_type"] == "google":
+            elif ai_model_type == "google":
                 api_key = self.config.get('google.api_key', None)
                 if not api_key:
-                    self.log.error("Google API key is not configured.")
+                    self.logger.error("Google API key is not configured.")
                     return ["posted-link"]  # Return default tag
 
                 headers = {
@@ -379,7 +428,7 @@ class AIIntegration:
                         try:
                             response_json = json.loads(response_text)
                         except json.JSONDecodeError as e:
-                            self.log.error(f"Error decoding Google API response: {e}\nResponse text: {response_text}")
+                            self.logger.error(f"Error decoding Google API response: {e}\nResponse text: {response_text}")
                             return ["posted-link"]  # Return default tag
 
                         if response.status == 200:
@@ -400,16 +449,16 @@ class AIIntegration:
                                 return ["posted-link"]
                             return tags
                         else:
-                            self.log.error(f"Google API error: {response.status} {response_json}")
+                            self.logger.error(f"Google API error: {response.status} {response_json}")
                             return ["posted-link"]  # Return default tag
 
             else:
-                self.log.error(f"Unknown AI model type: {self.config['ai_model_type']}")
+                self.logger.error(f"Unknown AI model type: {self.config['ai_model_type']}")
                 return ["posted-link"]  # Return default tag
 
         except Exception as e:
             tb = traceback.format_exc()
-            self.log.error(f"Error generating tags: {e}\n{tb}")
+            self.logger.error(f"Error generating tags: {e}\n{tb}")
             return ["posted-link"]  # Return default tag instead of "fix-me"
 
     generate_title_prompt = "Create a brief (3-10 word) attention-grabbing title for the {target_audience} for the following post on the community forum: {message_body}"
@@ -420,23 +469,29 @@ class AIIntegration:
     async def generate_openai_title(self, message_body: str, use_links_prompt: bool = False) -> Optional[str]:
         # Choose the appropriate prompt based on the use_links_prompt flag
         if use_links_prompt:
-            prompt = self.generate_links_title_prompt.format(message_body=message_body)
+            # use the generate_links_title_prompt if the use_links_prompt flag is true
+            prompt_template = "Create a brief (3-10 word) attention-grabbing title for the following content. Focus only on the main topic. DO NOT use markdown formatting like # or **. Do not include any commentary, source attribution, or explanations. Just provide the title: {message_body}"
         else:
-            prompt = self.generate_title_prompt.format(target_audience=self.target_audience, message_body=message_body)
+            # if not use_links_prompt, use the generate_title_prompt
+            prompt_template = "Create a brief (3-10 word) attention-grabbing title for the following content. Focus only on the main topic. DO NOT use markdown formatting like # or **. Do not include any commentary, source attribution, or explanations. Just provide the title: {message_body}"
+        
+        prompt = prompt_template.format(message_body=message_body, target_audience=self.target_audience)
+        
         try:
             api_key = self.config.get('openai.api_key', None)
             if not api_key:
-                self.log.error("OpenAI API key is not configured.")
+                self.logger.error("OpenAI API key is not configured.")
                 return None
 
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {api_key}"
             }
+
             data = {
                 "model": self.config["openai.model"],
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": self.config["openai.max_tokens"],
+                "max_tokens": min(self.config["openai.max_tokens"], 100),  # Limit to 100 tokens for title
                 "temperature": self.config["openai.temperature"],
             }
 
@@ -446,32 +501,54 @@ class AIIntegration:
                     try:
                         response_json = json.loads(response_text)
                     except json.JSONDecodeError as e:
-                        self.log.error(f"Error decoding OpenAI response: {e}\nResponse text: {response_text}")
+                        self.logger.error(f"Error decoding OpenAI response: {e}\nResponse text: {response_text}")
                         return None
 
                     if response.status == 200:
-                        return response_json["choices"][0]["message"]["content"].strip()
+                        title = response_json["choices"][0]["message"]["content"].strip()
+                        
+                        # Clean up the title - remove any "Title:" prefix or quotes that the model might add
+                        title = title.replace("Title:", "").strip()
+                        title = title.strip('"\'')
+                        
+                        # Clean any markdown formatting
+                        title = self.clean_markdown_from_title(title)
+                        
+                        # Ensure the title is not too long for Discourse (max 255 chars)
+                        if len(title) > 250:
+                            title = title[:247] + "..."
+                            
+                        return title
                     else:
-                        self.log.error(f"OpenAI API error: {response.status} {response_json}")
+                        self.logger.error(f"OpenAI API error: {response.status} {response_json}")
                         return None
         except Exception as e:
             tb = traceback.format_exc()
-            self.log.error(f"Error generating title with OpenAI: {e}\n{tb}")
+            self.logger.error(f"Error generating title with OpenAI: {e}\n{tb}")
             return None
 
     async def summarize_with_openai(self, content: str) -> Optional[str]:
-        prompt = f"""Please provide a concise summary of the following content identifying key points and references and a brief executive summary.
-        if there isn't enough information please just say 'Not Enough Information to Summarize':\n\n{content}"""
+        prompt = f"Please provide a concise summary which is relevant to the {self.target_audience} of the following content:\n\n{content}"
+        
+        # Check if this is a specific format request
+        if "bullet point format" in content or "maximum 300 words" in content or "exactly 5 key points" in content:
+            prompt = content  # Use the full prompt as is
+            
+        # Limit content length to prevent context length errors
+        if len(prompt) > 4000:
+            prompt = prompt[:4000] + "..."
+            
         try:
             api_key = self.config.get('openai.api_key', None)
             if not api_key:
-                self.log.error("OpenAI API key is not configured.")
+                self.logger.error("OpenAI API key is not configured.")
                 return None
 
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {api_key}"
             }
+
             data = {
                 "model": self.config["openai.model"],
                 "messages": [{"role": "user", "content": prompt}],
@@ -485,61 +562,201 @@ class AIIntegration:
                     try:
                         response_json = json.loads(response_text)
                     except json.JSONDecodeError as e:
-                        self.log.error(f"Error decoding OpenAI response: {e}\nResponse text: {response_text}")
+                        self.logger.error(f"Error decoding OpenAI response: {e}\nResponse text: {response_text}")
                         return None
 
                     if response.status == 200:
-                        return response_json["choices"][0]["message"]["content"].strip()
+                        result = response_json["choices"][0]["message"]["content"].strip()
+                        
+                        # For key points, ensure proper formatting
+                        if "bullet point format" in content or "exactly 5 key points" in content:
+                            # Convert any non-bullet point format to bullet points
+                            if not any(line.strip().startswith('-') for line in result.split('\n')):
+                                # Split by numbers or newlines or periods followed by space
+                                lines = re.split(r'\n|(?:\d+\.\s*)|(?:\.\s+)', result)
+                                # Filter out empty lines and format as bullet points
+                                formatted_lines = []
+                                for line in lines:
+                                    line = line.strip()
+                                    if line:
+                                        # Add period if missing
+                                        if not line.endswith('.'):
+                                            line += '.'
+                                        formatted_lines.append(f"- {line}")
+                                result = '\n'.join(formatted_lines)
+                        
+                        return result
                     else:
-                        self.log.error(f"OpenAI API error: {response.status} {response_json}")
+                        self.logger.error(f"OpenAI API error: {response.status} {response_json}")
                         return None
         except Exception as e:
             tb = traceback.format_exc()
-            self.log.error(f"Error summarizing with OpenAI: {e}\n{tb}")
+            self.logger.error(f"Error summarizing with OpenAI: {e}\n{tb}")
             return None
 
     async def generate_local_title(self, message_body: str, use_links_prompt: bool = False) -> Optional[str]:
-        #  local LLM API
+        # Choose the appropriate prompt based on the use_links_prompt flag
         if use_links_prompt:
-            prompt = self.generate_links_title_prompt.format(message_body=message_body)
+            prompt_template = "Create a brief (3-10 word) attention-grabbing title for the following content. Focus only on the main topic. DO NOT use markdown formatting like # or **. Do not include any commentary, source attribution, or explanations. Just provide the title: {message_body}"
         else:
-            prompt = self.generate_title_prompt.format(target_audience=self.target_audience, message_body=message_body)
+            prompt_template = "Create a brief (3-10 word) attention-grabbing title for the following content. Focus only on the main topic. DO NOT use markdown formatting like # or **. Do not include any commentary, source attribution, or explanations. Just provide the title: {message_body}"
+        
+        prompt = prompt_template.format(message_body=message_body, target_audience=self.target_audience)
+        
         try:
-            pass # Implement local LLM API
+            headers = {
+                "Content-Type": "application/json"
+            }
+            
+            data = {
+                "model": self.config.get("local_llm.model", "gemma-2-2b-it"),
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": min(self.config.get("local_llm.max_tokens", 500), 100),  # Limit to 100 tokens for title
+                "temperature": self.config.get("local_llm.temperature", 0.7),
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(self.config["local_llm.api_endpoint"], headers=headers, json=data) as response:
+                    response_text = await response.text()
+                    try:
+                        response_json = json.loads(response_text)
+                    except json.JSONDecodeError as e:
+                        self.logger.error(f"Error decoding Local LLM response: {e}\nResponse text: {response_text}")
+                        return None
+
+                    if response.status == 200:
+                        # Handle OpenAI-compatible format
+                        if "choices" in response_json and len(response_json["choices"]) > 0:
+                            if "message" in response_json["choices"][0]:
+                                result = response_json["choices"][0]["message"]["content"].strip()
+                            elif "text" in response_json["choices"][0]:
+                                result = response_json["choices"][0]["text"].strip()
+                        # Fallback for other formats
+                        elif "text" in response_json:
+                            result = response_json["text"].strip()
+                        else:
+                            self.logger.error(f"Unexpected response format from Local LLM: {response_json}")
+                            return None
+                        
+                        # Clean up the title - remove any "Title:" prefix or quotes that the model might add
+                        result = result.replace("Title:", "").strip()
+                        result = result.strip('"\'')
+                        
+                        # Clean any markdown formatting
+                        result = self.clean_markdown_from_title(result)
+                        
+                        # Ensure the title is not too long for Discourse (max 255 chars)
+                        if len(result) > 250:
+                            result = result[:247] + "..."
+                            
+                        return result
+                    else:
+                        self.logger.error(f"Local LLM API error: {response.status} {response_json}")
+                        return None
         except Exception as e:
             tb = traceback.format_exc()
-            self.log.error(f"Error generating title with local LLM: {e}\n{tb}")
+            self.logger.error(f"Error generating title with local LLM: {e}\n{tb}")
             return None
 
     async def summarize_with_local_llm(self, content: str) -> Optional[str]:
         prompt = f"Please provide a concise summary which is relevant to the {self.target_audience} of the following content:\n\n{content}"
+        
+        # Check if this is a specific format request
+        if "bullet point format" in content or "maximum 300 words" in content or "exactly 5 key points" in content:
+            prompt = content  # Use the full prompt as is
+        
+        # Limit content length to prevent context length errors
+        if len(prompt) > 2500:
+            prompt = prompt[:2500] + "..."
+        
         try:
-            pass # Implement local LLM API
+            headers = {
+                "Content-Type": "application/json"
+            }
+            
+            data = {
+                "model": self.config.get("local_llm.model", "gemma-2-2b-it"),
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": min(self.config.get("local_llm.max_tokens", 500), 1000),  # Limit to 1000 tokens
+                "temperature": self.config.get("local_llm.temperature", 0.7),
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(self.config["local_llm.api_endpoint"], headers=headers, json=data) as response:
+                    response_text = await response.text()
+                    try:
+                        response_json = json.loads(response_text)
+                    except json.JSONDecodeError as e:
+                        self.logger.error(f"Error decoding Local LLM response: {e}\nResponse text: {response_text}")
+                        return None
+
+                    if response.status == 200:
+                        # Handle OpenAI-compatible format
+                        if "choices" in response_json and len(response_json["choices"]) > 0:
+                            if "message" in response_json["choices"][0]:
+                                result = response_json["choices"][0]["message"]["content"].strip()
+                                
+                                # For key points, ensure proper formatting
+                                if "bullet point format" in content or "exactly 5 key points" in content:
+                                    # Convert any non-bullet point format to bullet points
+                                    if not any(line.strip().startswith('-') for line in result.split('\n')):
+                                        # Split by numbers or newlines or periods followed by space
+                                        lines = re.split(r'\n|(?:\d+\.\s*)|(?:\.\s+)', result)
+                                        # Filter out empty lines and format as bullet points
+                                        formatted_lines = []
+                                        for line in lines:
+                                            line = line.strip()
+                                            if line:
+                                                # Add period if missing
+                                                if not line.endswith('.'):
+                                                    line += '.'
+                                                formatted_lines.append(f"- {line}")
+                                        result = '\n'.join(formatted_lines)
+                                
+                                return result
+                            elif "text" in response_json["choices"][0]:
+                                return response_json["choices"][0]["text"].strip()
+                        # Fallback for other formats
+                        elif "text" in response_json:
+                            return response_json["text"].strip()
+                        else:
+                            self.logger.error(f"Unexpected response format from Local LLM: {response_json}")
+                            return None
+                    else:
+                        self.logger.error(f"Local LLM API error: {response.status} {response_json}")
+                        return None
         except Exception as e:
             tb = traceback.format_exc()
-            self.log.error(f"Error summarizing with local LLM: {e}\n{tb}")
+            self.logger.error(f"Error summarizing with local LLM: {e}\n{tb}")
             return None
 
     async def generate_google_title(self, message_body: str, use_links_prompt: bool = False) -> Optional[str]:
+        # Choose the appropriate prompt based on the use_links_prompt flag
         if use_links_prompt:
-            prompt = self.generate_links_title_prompt.format(message_body=message_body)
+            prompt_template = "Create a brief (3-10 word) attention-grabbing title for the following content. Focus only on the main topic. DO NOT use markdown formatting like # or **. Do not include any commentary, source attribution, or explanations. Just provide the title: {message_body}"
         else:
-            prompt = self.generate_title_prompt.format(target_audience=self.target_audience, message_body=message_body)
+            prompt_template = "Create a brief (3-10 word) attention-grabbing title for the following content. Focus only on the main topic. DO NOT use markdown formatting like # or **. Do not include any commentary, source attribution, or explanations. Just provide the title: {message_body}"
+        
+        prompt = prompt_template.format(message_body=message_body, target_audience=self.target_audience)
+        
         try:
             api_key = self.config.get('google.api_key', None)
             if not api_key:
-                self.log.error("Google API key is not configured.")
+                self.logger.error("Google API key is not configured.")
                 return None
 
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {api_key}"
             }
+            
             data = {
                 "model": self.config["google.model"],
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": self.config["google.max_tokens"],
-                "temperature": self.config["google.temperature"],
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "maxOutputTokens": min(self.config["google.max_tokens"], 100),  # Limit to 100 tokens for title
+                    "temperature": self.config["google.temperature"],
+                }
             }
 
             async with aiohttp.ClientSession() as session:
@@ -548,37 +765,61 @@ class AIIntegration:
                     try:
                         response_json = json.loads(response_text)
                     except json.JSONDecodeError as e:
-                        self.log.error(f"Error decoding Google API response: {e}\nResponse text: {response_text}")
+                        self.logger.error(f"Error decoding Google API response: {e}\nResponse text: {response_text}")
                         return None
 
                     if response.status == 200:
-                        # Adjust according to actual response format
-                        return response_json["candidates"][0]["output"].strip()
+                        title = response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+                        
+                        # Clean up the title - remove any "Title:" prefix or quotes that the model might add
+                        title = title.replace("Title:", "").strip()
+                        title = title.strip('"\'')
+                        
+                        # Clean any markdown formatting
+                        title = self.clean_markdown_from_title(title)
+                        
+                        # Ensure the title is not too long for Discourse (max 255 chars)
+                        if len(title) > 250:
+                            title = title[:247] + "..."
+                            
+                        return title
                     else:
-                        self.log.error(f"Google API error: {response.status} {response_json}")
+                        self.logger.error(f"Google API error: {response.status} {response_json}")
                         return None
         except Exception as e:
             tb = traceback.format_exc()
-            self.log.error(f"Error generating title with Google: {e}\n{tb}")
+            self.logger.error(f"Error generating title with Google: {e}\n{tb}")
             return None
 
     async def summarize_with_google(self, content: str) -> Optional[str]:
         prompt = f"Please provide a concise summary which is relevant to the {self.target_audience} of the following content:\n\n{content}"
+        
+        # Check if this is a specific format request
+        if "bullet point format" in content or "maximum 300 words" in content or "exactly 5 key points" in content:
+            prompt = content  # Use the full prompt as is
+            
+        # Limit content length to prevent context length errors
+        if len(prompt) > 4000:
+            prompt = prompt[:4000] + "..."
+            
         try:
             api_key = self.config.get('google.api_key', None)
             if not api_key:
-                self.log.error("Google API key is not configured.")
+                self.logger.error("Google API key is not configured.")
                 return None
 
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {api_key}"
             }
+            
             data = {
                 "model": self.config["google.model"],
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": self.config["google.max_tokens"],
-                "temperature": self.config["google.temperature"],
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "maxOutputTokens": self.config["google.max_tokens"],
+                    "temperature": self.config["google.temperature"],
+                }
             }
 
             async with aiohttp.ClientSession() as session:
@@ -587,49 +828,105 @@ class AIIntegration:
                     try:
                         response_json = json.loads(response_text)
                     except json.JSONDecodeError as e:
-                        self.log.error(f"Error decoding Google API response: {e}\nResponse text: {response_text}")
+                        self.logger.error(f"Error decoding Google API response: {e}\nResponse text: {response_text}")
                         return None
 
                     if response.status == 200:
-                        # Adjust according to actual response format
-                        return response_json["candidates"][0]["output"].strip()
+                        result = response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+                        
+                        # For key points, ensure proper formatting
+                        if "bullet point format" in content or "exactly 5 key points" in content:
+                            # Convert any non-bullet point format to bullet points
+                            if not any(line.strip().startswith('-') for line in result.split('\n')):
+                                # Split by numbers or newlines or periods followed by space
+                                lines = re.split(r'\n|(?:\d+\.\s*)|(?:\.\s+)', result)
+                                # Filter out empty lines and format as bullet points
+                                formatted_lines = []
+                                for line in lines:
+                                    line = line.strip()
+                                    if line:
+                                        # Add period if missing
+                                        if not line.endswith('.'):
+                                            line += '.'
+                                        formatted_lines.append(f"- {line}")
+                                result = '\n'.join(formatted_lines)
+                        
+                        return result
                     else:
-                        self.log.error(f"Google API error: {response.status} {response_json}")
+                        self.logger.error(f"Google API error: {response.status} {response_json}")
                         return None
         except Exception as e:
             tb = traceback.format_exc()
-            self.log.error(f"Error summarizing with Google: {e}\n{tb}")
+            self.logger.error(f"Error summarizing with Google: {e}\n{tb}")
             return None
 
     async def generate_title_for_bypassed_links(self, message_body: str) -> Optional[str]:
-        """
-        Generate a title for bypassed links.
+        """Generate a title for a message with bypassed links."""
+        if not self.ai_integration:
+            self.ai_integration = AIIntegration(self.config, logger)
         
-        Args:
-            message_body (str): The message body to generate a title from
+        # Use a more direct prompt for title generation
+        prompt = f"Create a brief (3-10 word) attention-grabbing title for the following content. Focus only on the main topic. DO NOT use markdown formatting like # or **. Do not include any commentary, source attribution, or explanations. Just provide the title: {message_body}"
+        
+        title = await self.ai_integration.generate_title(prompt)
+        
+        # Clean up the title - remove any "Title:" prefix or quotes that the model might add
+        if title:
+            title = title.replace("Title:", "").strip()
+            title = title.strip('"\'')
             
-        Returns:
-            Optional[str]: The generated title, or None if generation fails
-        """
-        return await self.ai_integration.generate_links_title(message_body)
+            # Clean any markdown formatting
+            title = self.clean_markdown_from_title(title)
+            
+            # Ensure the title is not too long for Discourse (max 255 chars)
+            if len(title) > 250:
+                title = title[:247] + "..."
+        
+        return title
 
-    async def generate_title(self, message_body: str) -> Optional[str]:
-        """
-        Generate a title for a message.
+    async def api_call_with_retry(self, func, *args, max_retries=3, **kwargs):
+        for attempt in range(max_retries):
+            try:
+                return await func(*args, **kwargs)
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  # Exponential backoff
+                    self.logger.warning(f"API call failed, retrying in {wait_time}s: {e}")
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise
+
+    @command.new(name="list-mappings", require_subcommand=False)
+    async def list_mappings_command(self, evt: MessageEvent) -> None:
+        """Command to list the current message ID mappings."""
+        # Only allow admins to use this command
+        if not await self.is_admin(evt.sender):
+            await evt.reply("You don't have permission to use this command.")
+            return
         
-        Args:
-            message_body (str): The message body to generate a title from
-            
-        Returns:
-            Optional[str]: The generated title, or None if generation fails
-        """
-        return await self.ai_integration.generate_title(message_body, use_links_prompt=False)
+        if not self.message_id_map:
+            await evt.reply("No message ID mappings found.")
+            return
+        
+        # Format the mappings for display
+        mappings = []
+        for matrix_id, discourse_id in list(self.message_id_map.items())[:10]:  # Limit to 10 entries
+            mappings.append(f"Matrix ID: {matrix_id} -> Discourse Topic: {discourse_id}")
+        
+        total = len(self.message_id_map)
+        shown = min(10, total)
+        
+        message = f"Message ID Mappings ({shown} of {total} shown):\n\n" + "\n".join(mappings)
+        if total > 10:
+            message += f"\n\n... and {total - 10} more."
+        
+        await evt.reply(message)
 
 # DiscourseAPI class
 class DiscourseAPI:
     def __init__(self, config, log):
         self.config = config
-        self.log = log
+        self.logger = log  # Change logger to self.logger
         
         # Ensure we have the required configuration
         self.base_url = config.get("discourse_base_url", None)
@@ -637,7 +934,7 @@ class DiscourseAPI:
         self.api_username = config.get("discourse_api_username", None)
         
         if not self.base_url or not self.api_key or not self.api_username:
-            log.error("Missing required Discourse configuration. Please check your config file.")
+            self.logger.error("Missing required Discourse configuration. Please check your config file.")
     
     async def create_post(self, title, raw, category_id, tags=None, topic_id=None):
         """
@@ -656,6 +953,10 @@ class DiscourseAPI:
         if not self.base_url or not self.api_key or not self.api_username:
             return None, "Missing required Discourse configuration"
             
+        # Ensure title is within Discourse's 255 character limit
+        if title and len(title) > 250:
+            title = title[:247] + "..."
+            
         url = f"{self.base_url}/posts.json"
         headers = {
             "Content-Type": "application/json",
@@ -663,106 +964,103 @@ class DiscourseAPI:
             "Api-Username": self.api_username,
         }
         
-        # Prepare payload based on whether it's a new topic or a reply
+        # Prepare the payload
+        payload = {
+            "raw": raw,
+        }
+        
         if topic_id:
             # This is a reply to an existing topic
-            payload = {
-                "raw": raw,
-                "topic_id": topic_id,
-            }
-            self.log.info(f"Creating reply to topic ID: {topic_id}")
+            payload["topic_id"] = topic_id
+            self.logger.info(f"Creating reply to topic ID: {topic_id}")
         else:
             # This is a new topic
-            payload = {
-                "title": title,
-                "raw": raw,
-                "category": category_id,
-                "tags": tags or [],
-            }
+            payload["title"] = title
+            payload["category"] = category_id
+            if tags:
+                payload["tags"] = tags
         
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json=payload) as response:
                 response_text = await response.text()
                 try:
-                    data = json.loads(response_text)
+                    response_json = json.loads(response_text)
                 except json.JSONDecodeError as e:
-                    self.log.error(f"Error decoding Discourse response: {e}\nResponse text: {response_text}")
-                    return None, f"Error decoding Discourse response: {e}"
-
+                    self.logger.error(f"Error decoding Discourse response: {e}\nResponse text: {response_text}")
+                    return None, f"Error decoding response: {e}"
+                
                 if response.status == 200:
-                    if topic_id:
-                        # For replies, we get post_id and topic_id
-                        post_id = data.get("id")
-                        post_url = f"{self.base_url}/t/{topic_id}/{post_id}"
+                    # Extract the post URL from the response
+                    post_id = response_json.get("id")
+                    topic_id = response_json.get("topic_id")
+                    topic_slug = response_json.get("topic_slug")
+                    
+                    if post_id and topic_id and topic_slug:
+                        post_url = f"{self.base_url}/t/{topic_slug}/{topic_id}"
+                        return post_url, None
                     else:
-                        # For new topics, we get topic_id and topic_slug
-                        topic_id = data.get("topic_id")
-                        topic_slug = data.get("topic_slug")
-                        post_url = (
-                            f"{self.base_url}/t/{topic_slug}/{topic_id}"
-                            if topic_id and topic_slug
-                            else "URL not available"
-                        )
-                    return post_url, None
+                        return None, "Missing post information in response"
                 else:
-                    self.log.error(f"Discourse API error: {response.status} {data}")
-                    return None, f"Failed to create post: {response.status}\nResponse: {response_text}"
+                    data = response_json.get("errors", response_json)
+                    self.logger.error(f"Discourse API error: {response.status} {data}")
+                    return None, f"API error: {data}"
     # Check for duplicate posts with discourse api
     async def check_for_duplicate(self, url: str, tag: str = "posted-link") -> bool:
         """
-        Check for duplicate posts by searching for a URL within posts.
-
-        Args:
-            url (str): The URL to check for duplicates.
-            tag (str): The tag to filter posts. Defaults to "posted-link".
-
-        Returns:
-            bool: True if a duplicate post is found, False otherwise.
-            str: The URL of the duplicate post if found, None otherwise.
-        """
-        search_url = f"{self.base_url}/search/query.json"
-        headers = {
-            "Content-Type": "application/json",
-            "Api-Key": self.api_key,
-            "Api-Username": self.api_username,
-        }
+        Check if a URL has already been posted to Discourse.
         
-        # Normalize the URL for more accurate matching
-        normalized_url = self.normalize_url(url)
-        self.log.debug(f"Checking for duplicates of normalized URL: {normalized_url}")
-
-        # First try searching directly for the URL
-        params = {"term": normalized_url}
-        self.log.debug(f"Searching Discourse with direct URL: {params}")
-
+        Args:
+            url (str): The URL to check
+            tag (str): The tag to search for (default: "posted-link")
+            
+        Returns:
+            tuple: (bool, str) - (True if duplicate exists, URL of the duplicate post)
+        """
         try:
+            # Define headers here to avoid the "headers is not defined" error
+            headers = {
+                "Content-Type": "application/json",
+                "Api-Key": self.api_key,
+                "Api-Username": self.api_username,
+            }
+            
+            # Normalize the URL to handle variations
+            normalized_url = self.normalize_url(url)
+            self.logger.debug(f"Checking for duplicates of normalized URL: {normalized_url}")
+            
+            # First, try a direct search for the URL
+            params = {"q": normalized_url}
+            self.logger.debug(f"Searching Discourse with direct URL: {params}")
+            
             async with aiohttp.ClientSession() as session:
-                async with session.get(search_url, headers=headers, params=params) as response:
+                search_url = f"{self.base_url}/search.json"
+                async with session.get(search_url, params=params, headers=headers) as response:
                     if response.status != 200:
-                        self.log.error(f"Discourse API error: {response.status}")
+                        self.logger.error(f"Discourse API error: {response.status}")
                         return False, None
-
-                    response_json = await response.json()
-                    self.log.debug(f"Received response for direct URL search: {response_json}")
-
-                    # Check if any posts contain the URL
-                    if response_json.get("posts", []):
-                        for post in response_json.get("posts", []):
-                            post_id = post.get("id")
-                            topic_id = post.get("topic_id")
-                            if topic_id:
-                                topic_url = f"{self.base_url}/t/{topic_id}"
-                                self.log.info(f"Duplicate post found: {topic_url}")
+                    
+                    response_text = await response.text()
+                    response_json = json.loads(response_text)
+                    
+                    # Check if there are any topics in the response
+                    if "topics" in response_json and response_json["topics"]:
+                        for topic in response_json["topics"]:
+                            # Get the topic content and check if it contains the URL
+                            topic_id = topic.get("id")
+                            # Check if the topic has the URL in its content
+                            if "id" in topic and "slug" in topic:
+                                topic_url = f"{self.base_url}/t/{topic['slug']}/{topic['id']}"
+                                self.logger.info(f"Duplicate post found: {topic_url}")
                                 return True, topic_url
             
             # If no direct match, try searching for posts with the tag
-            params = {"term": f'tags:{tag}'}
-            self.log.debug(f"Searching Discourse with tag: {params}")
+            params = {"q": f"tags:{tag}"}
+            self.logger.debug(f"Searching Discourse with tag: {params}")
             
             async with aiohttp.ClientSession() as session:
                 async with session.get(search_url, headers=headers, params=params) as response:
                     if response.status != 200:
-                        self.log.error(f"Discourse API error: {response.status}")
+                        logger.error(f"Discourse API error: {response.status}")
                         return False, None
 
                     response_json = await response.json()
@@ -788,11 +1086,11 @@ class DiscourseAPI:
                             if variation in raw_content:
                                 if topic_id:
                                     topic_url = f"{self.base_url}/t/{topic_id}"
-                                    self.log.info(f"Duplicate post found: {topic_url}")
+                                    self.logger.info(f"Duplicate post found: {topic_url}")
                                     return True, topic_url
                                 
         except Exception as e:
-            self.log.error(f"Error during Discourse API request: {e}")
+            self.logger.error(f"Error during Discourse API request: {e}")
             return False, None
             
         return False, None
@@ -820,196 +1118,86 @@ class DiscourseAPI:
         return normalized_url
     # Search the discourse api for a query
     async def search_discourse(self, query: str):
+        """
+        Search Discourse for posts matching a query.
+        
+        Args:
+            query (str): The search query
+            
+        Returns:
+            dict: The search results or None if the search fails
+        """
         search_url = f"{self.base_url}/search.json"
         headers = {
             "Content-Type": "application/json",
             "Api-Key": self.api_key,
             "Api-Username": self.api_username,
         }
-        params = {"q": query}
-
-        async with aiohttp.ClientSession() as session:
-            async with session.get(search_url, headers=headers, params=params) as response:
-                response_text = await response.text()
-                try:
-                    response_json = json.loads(response_text)
-                except json.JSONDecodeError as e:
-                    self.log.error(f"Error decoding Discourse response: {e}\nResponse text: {response_text}")
-                    return None
-
-                if response.status == 200:
-                    return response_json.get("topics", [])
-                else:
-                    self.log.error(f"Discourse API error: {response.status} {response_json}")
-                    return None
-    # get_top_tags from discourse api to use for tags
-    async def get_top_tags(self):
-        """Fetch top tags from Discourse API.
         
-        Returns:
-            dict: JSON response containing tags information, or None if the request fails
-        """
-        #var with number of tags to get
-        num_tags = 10
-        url = f"{self.base_url}/tags.json" # get tags from discourse api
-        headers = {
-            "Content-Type": "application/json",
-            "Api-Key": self.api_key,
-            "Api-Username": self.api_username,
-        }
-        # using try because the api key may be invalid
+        params = {"q": query}
+        
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers) as response:
+                async with session.get(search_url, headers=headers, params=params, timeout=15) as response:
                     response_text = await response.text()
                     try:
                         response_json = json.loads(response_text)
                     except json.JSONDecodeError as e:
-                        self.log.error(f"Error decoding Discourse response: {e}\nResponse text: {response_text}")
+                        self.logger.error(f"Error decoding Discourse response: {e}\nResponse text: {response_text}")
                         return None
-
+                    
                     if response.status == 200:
-                        # return top num_tags tags
-                        return response_json[:num_tags]
+                        return response_json
                     else:
-                        self.log.error(f"Discourse API error: {response.status} {response_json}")
+                        self.logger.error(f"Discourse API error: {response.status} {response_json}")
                         return None
-        # Log the error if there is one
         except Exception as e:
-            self.log.error(f"Error fetching top tags: {e}")
+            self.logger.error(f"Error searching Discourse: {e}")
             return None
 
     async def get_all_tags(self):
-        """Fetch all tags from Discourse API.
+        """
+        Get all tags from Discourse.
         
         Returns:
-            list: A list of all tag names, or None if the request fails
+            list: All tags or None if the request fails
         """
-        url = f"{self.base_url}/tags.json"
-        headers = {
-            "Content-Type": "application/json",
-            "Api-Key": self.api_key,
-            "Api-Username": self.api_username,
-        }
-        
         try:
+            tags_url = f"{self.base_url}/tags.json"
+            headers = {
+                "Content-Type": "application/json",
+                "Api-Key": self.api_key,
+                "Api-Username": self.api_username,
+            }
+            
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers) as response:
+                async with session.get(tags_url, headers=headers) as response:
                     response_text = await response.text()
-                    self.log.debug(f"Response text: {response_text}")  # Log the raw response text
+                    self.logger.debug(f"Response text: {response_text}")  # Log the raw response text
+                    
                     try:
                         response_json = json.loads(response_text)
                     except json.JSONDecodeError as e:
-                        self.log.error(f"Error decoding Discourse response: {e}\nResponse text: {response_text}")
+                        self.logger.error(f"Error decoding Discourse response: {e}\nResponse text: {response_text}")
                         return None
-
+                    
+                    self.logger.debug(f"Response JSON: {response_json}")
+                    
                     if response.status == 200:
-                        # Log the entire JSON response for debugging
-                        self.log.debug(f"Response JSON: {response_json}")
-                        # Check if the response contains a 'tags' key with a list of tags
-                        if isinstance(response_json, dict) and "tags" in response_json:
-                            tags = response_json["tags"]
-                            if isinstance(tags, list):
-                                # Extract all tag names
-                                all_tags = [tag for tag in tags if isinstance(tag, dict) and "name" in tag]
-                                return all_tags
+                        if "tags" in response_json:
+                            if isinstance(response_json["tags"], list):
+                                return response_json["tags"]
                             else:
-                                self.log.error("Unexpected format for 'tags' in response. Expected a list.")
-                                return None
+                                self.logger.error("Unexpected format for 'tags' in response. Expected a list.")
                         else:
-                            self.log.error("Unexpected response structure. 'tags' key not found.")
-                            return None
+                            self.logger.error("Unexpected response structure. 'tags' key not found.")
+                        return None
                     else:
-                        self.log.error(f"Discourse API error: {response.status} {response_json}")
+                        self.logger.error(f"Discourse API error: {response.status} {response_json}")
                         return None
         except Exception as e:
-            self.log.error(f"Error fetching tags: {e}")
+            self.logger.error(f"Error fetching tags: {e}")
             return None
-
-# URL handling functions
-def extract_urls(text: str) -> List[str]:
-    url_regex = r'(https?://\S+)'
-    return re.findall(url_regex, text)
-# Generate bypass links for the url
-def generate_bypass_links(url: str) -> Dict[str, str]:
-    links = {
-        "original": url,
-        "12ft": f"https://12ft.io/{url}",
-        "archive.org": f"https://web.archive.org/web/{url}",
-        "archive.is": f"https://archive.is/{url}",
-        "archive.ph": f"https://archive.ph/{url}",
-        "archive.today": f"https://archive.today/{url}",
-    }
-    return links
-
-async def scrape_content(url: str) -> Optional[str]:
-    """Scrape content from URL using BeautifulSoup or specific APIs for social media."""
-    try:
-        if url.lower().endswith('.pdf'):
-            return await scrape_pdf_content(url)
-        elif "x.com" in url or "twitter.com" in url:
-            return await scrape_twitter_content(url)
-        elif "reddit.com" in url:
-            return await scrape_reddit_content(url)
-        elif "linkedin.com" in url:
-            return await scrape_linkedin_content(url)
-        else:
-            # Fallback to generic scraping
-            content = await generic_scrape_content(url)
-            if content:
-                return content
-            else:
-                # If original URL fails, try archive services
-                logger.info(f"Original URL {url} failed, trying archive services")
-                return await scrape_from_archives(url)
-    except Exception as e:
-        logger.error(f"Error scraping content from {url}: {str(e)}")
-        return None
-
-async def scrape_from_archives(url: str) -> Optional[str]:
-    """Try to scrape content from various archive services when the original URL fails."""
-    archive_urls = [
-        f"https://web.archive.org/web/{url}",
-        f"https://archive.is/{url}",
-        f"https://archive.ph/{url}",
-        f"https://archive.today/{url}",
-        f"https://12ft.io/{url}"
-    ]
-    
-    # Try Google Cache as well
-    google_cache_url = f"https://webcache.googleusercontent.com/search?q=cache:{url}"
-    archive_urls.append(google_cache_url)
-    
-    for archive_url in archive_urls:
-        logger.info(f"Trying to scrape from archive: {archive_url}")
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(archive_url, timeout=15) as response:
-                    if response.status == 200:
-                        html = await response.text()
-                        soup = BeautifulSoup(html, 'html.parser')
-                        
-                        # Get title
-                        title = soup.title.string if soup.title else ""
-                        
-                        # Get main content (first few paragraphs)
-                        paragraphs = soup.find_all("p")[:5]  # Get first 5 paragraphs
-                        content = "\n".join(p.get_text().strip() for p in paragraphs)
-                        
-                        if content:
-                            # Combine all content
-                            scraped_content = f"""
-Title: {title} (Retrieved from {archive_url})
-
-Content:
-{content}
-"""
-                            return scraped_content.strip()
-        except Exception as e:
-            logger.error(f"Error scraping from archive {archive_url}: {str(e)}")
-            continue
-    
-    return None
 
 async def scrape_twitter_content(url: str) -> Optional[str]:
     """Scrape content from a Twitter URL using snscrape."""
@@ -1063,87 +1251,21 @@ Replies: {tweet.replyCount}"""
         return None
 async def scrape_linkedin_content(url: str, timeout: int = 10) -> Optional[str]:
     """
-    Scrape content from a LinkedIn URL using direct HTML scraping instead of the API.
-    This method doesn't require authentication and works with public LinkedIn posts.
+    Scrape content from a LinkedIn URL.
     
     Args:
-        url (str): The LinkedIn URL to scrape.
-        timeout (int): Request timeout in seconds.
+        url (str): The LinkedIn URL to scrape
+        timeout (int): Request timeout in seconds
         
     Returns:
-        Optional[str]: The formatted content or None on failure.
+        Optional[str]: The scraped content, or None if scraping fails
     """
     try:
-        # Use custom headers to mimic a browser
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate, br",
-            "DNT": "1",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Cache-Control": "max-age=0",
-            "Referer": "https://www.google.com/"
-        }
-        
-        # Use a timeout for the request
-        timeout_obj = aiohttp.ClientTimeout(total=timeout)
-        
-        async with aiohttp.ClientSession(timeout=timeout_obj) as session:
-            async with session.get(url, headers=headers) as response:
-                if response.status != 200:
-                    logger.error(f"Failed to fetch LinkedIn URL: {url}, status: {response.status}")
-                    # Try archive services as a fallback
-                    return await scrape_from_archives(url)
-                
-                html = await response.text()
-                soup = BeautifulSoup(html, 'html.parser')
-                
-                # Extract post information
-                title = soup.title.string if soup.title else "LinkedIn Post"
-                
-                # Try to extract author information
-                author = None
-                author_elem = soup.select_one('a.share-update-card__actor-text-link')
-                if author_elem:
-                    author = author_elem.get_text(strip=True)
-                
-                # Try to extract post content
-                content = ""
-                content_elem = soup.select_one('div.share-update-card__update-text')
-                if content_elem:
-                    content = content_elem.get_text(strip=True)
-                
-                # If we couldn't find content through specific selectors, try more generic approaches
-                if not content:
-                    # Look for article content
-                    article_elem = soup.select_one('article')
-                    if article_elem:
-                        paragraphs = article_elem.select('p')
-                        content = "\n".join(p.get_text(strip=True) for p in paragraphs)
-                
-                # If still no content, extract meta description
-                if not content:
-                    meta_desc = soup.find("meta", {"name": "description"}) or soup.find("meta", {"property": "og:description"})
-                    if meta_desc:
-                        content = meta_desc.get("content", "")
-                
-                # Format the extracted information
-                formatted_content = f"LinkedIn Post\n\n"
-                
-                if author:
-                    formatted_content += f"Author: {author}\n\n"
-                
-                formatted_content += f"Content:\n{content}\n\n"
-                formatted_content += f"URL: {url}"
-                
-                return formatted_content
-                
+        # Use generic scraping for LinkedIn
+        return await generic_scrape_content(url)
     except Exception as e:
         logger.error(f"Error scraping LinkedIn content: {str(e)}")
-        # Try archive services as a fallback
-        return await scrape_from_archives(url)
+        return None
 
 def extract_linkedin_post_id(url: str) -> Optional[tuple[str, str]]:
     """
@@ -1227,77 +1349,86 @@ async def format_linkedin_content(post_data: dict, content_type: str) -> str:
         return "Error formatting content"
     
 async def scrape_reddit_content(url: str) -> Optional[str]:
-    """Scrape content from a Reddit URL including post details, media, and metadata."""
+    """
+    Scrape content from a Reddit URL.
+    
+    Args:
+        url (str): The Reddit URL to scrape
+        
+    Returns:
+        Optional[str]: The scraped content, or None if scraping fails
+    """
     try:
-        # Extract post ID from various Reddit URL formats
+        # Extract post ID from URL
         post_id = extract_reddit_post_id(url)
         if not post_id:
-            logger.error(f"Could not extract post ID from URL: {url}")
             return None
-
-        headers = {"User-Agent": "MatrixToDiscourseBot/1.0"}
-        api_url = f"https://api.reddit.com/api/info/?id=t3_{post_id}"
         
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(api_url) as response:
+        # Use Reddit JSON API
+        api_url = f"https://www.reddit.com/comments/{post_id}.json"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url, headers={"User-Agent": "Mozilla/5.0"}) as response:
                 if response.status != 200:
                     logger.error(f"Failed to fetch Reddit content: {response.status}")
                     return None
-
+                
                 try:
                     data = await response.json()
-                except json.JSONDecodeError as e:
+                except Exception as e:
                     logger.error(f"Error decoding Reddit response: {e}")
                     return None
-
-                if not data.get('data', {}).get('children'):
+                
+                if not data or not isinstance(data, list) or len(data) < 1:
                     logger.error("No data found for Reddit post")
                     return None
                 
-                post_data = data['data']['children'][0]['data']
+                # Extract post data
+                post_data = data[0]["data"]["children"][0]["data"]
                 
-                # Build formatted content with comprehensive post information
-                content_parts = []
+                # Get title and content
+                title = post_data.get("title", "")
+                selftext = post_data.get("selftext", "")
+                author = post_data.get("author", "")
+                subreddit = post_data.get("subreddit_name_prefixed", "")
+                score = post_data.get("score", 0)
+                num_comments = post_data.get("num_comments", 0)
                 
-                # Title and basic info
-                content_parts.append(f"Title: {post_data.get('title', 'No Title')}")
-                content_parts.append(f"Author: u/{post_data.get('author', '[deleted]')}")
-                content_parts.append(f"Subreddit: r/{post_data.get('subreddit', 'unknown')}")
+                # Format content
+                content = f"""Reddit Post: {title}
+URL: {url}
+Author: u/{author}
+Subreddit: {subreddit}
+Score: {score}
+Comments: {num_comments}
+
+{selftext}
+"""
                 
-                # Post statistics
-                stats = (
-                    f"Score: {post_data.get('score', 0)} | "
-                    f"Upvote Ratio: {post_data.get('upvote_ratio', 0) * 100:.0f}% | "
-                    f"Comments: {post_data.get('num_comments', 0)}"
-                )
-                content_parts.append(stats)
+                # Add link to media if present
+                if post_data.get("url") and "reddit.com" not in post_data["url"]:
+                    content += f"\nMedia URL: {post_data['url']}"
                 
-                # Main content
-                if post_data.get('selftext'):
-                    content_parts.append("\nContent:")
-                    content_parts.append(post_data['selftext'])
+                # Add top comments if available
+                if len(data) > 1 and "data" in data[1] and "children" in data[1]["data"]:
+                    comments = data[1]["data"]["children"]
+                    if comments:
+                        content += "\n\nTop Comments:\n"
+                        comment_count = 0
+                        for comment in comments:
+                            if "data" in comment and "body" in comment["data"]:
+                                comment_author = comment["data"].get("author", "")
+                                comment_body = comment["data"]["body"]
+                                comment_score = comment["data"].get("score", 0)
+                                
+                                content += f"\nu/{comment_author} ({comment_score} points):\n{comment_body}\n"
+                                
+                                comment_count += 1
+                                if comment_count >= 3:  # Limit to top 3 comments
+                                    break
                 
-                # Handle media content
-                if post_data.get('is_video') and post_data.get('media', {}).get('reddit_video'):
-                    content_parts.append("\nVideo URL:")
-                    content_parts.append(post_data['media']['reddit_video']['fallback_url'])
+                return content
                 
-                if post_data.get('url') and post_data.get('post_hint') == 'image':
-                    content_parts.append("\nImage URL:")
-                    content_parts.append(post_data['url'])
-                
-                # Handle crosspost
-                if post_data.get('crosspost_parent_list'):
-                    crosspost = post_data['crosspost_parent_list'][0]
-                    content_parts.append("\nCrossposted from:")
-                    content_parts.append(f"r/{crosspost.get('subreddit')} - {crosspost.get('title')}")
-                
-                # Handle external links
-                if post_data.get('url') and not post_data.get('is_self'):
-                    content_parts.append("\nExternal Link:")
-                    content_parts.append(post_data['url'])
-                
-                return "\n".join(content_parts)
     except Exception as e:
         logger.error(f"Error scraping Reddit content: {str(e)}")
         return None
@@ -1324,32 +1455,33 @@ def extract_reddit_post_id(url: str) -> Optional[str]:
         return None
 
 async def generic_scrape_content(url: str) -> Optional[str]:
-    """Generic scraping for non-social media URLs with improved headers and error handling."""
-    # Common user agents to rotate through
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0"
-    ]
+    """
+    Generic scraper for web content using BeautifulSoup.
     
-    # Custom headers to mimic a browser
-    headers = {
-        "User-Agent": random.choice(user_agents),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Accept-Encoding": "gzip, deflate, br",
-        "DNT": "1",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-        "Cache-Control": "max-age=0",
-        "TE": "Trailers",
-        "Referer": "https://www.google.com/"
-    }
-    
+    Args:
+        url (str): The URL to scrape
+        
+    Returns:
+        Optional[str]: The scraped content, or None if scraping fails
+    """
     try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.google.com/",
+            "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "cross-site",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1"
+        }
+        
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=15, allow_redirects=True) as response:
+            async with session.get(url, headers=headers, timeout=15) as response:
                 if response.status != 200:
                     logger.error(f"Failed to fetch URL: {url}, status: {response.status}")
                     return None
@@ -1357,54 +1489,43 @@ async def generic_scrape_content(url: str) -> Optional[str]:
                 html = await response.text()
                 soup = BeautifulSoup(html, 'html.parser')
                 
+                # Remove script and style elements
+                for script in soup(["script", "style"]):
+                    script.extract()
+                
                 # Get title
                 title = soup.title.string if soup.title else ""
                 
+                # Try to get main content
+                main_content = ""
+                
+                # Try common content containers
+                content_candidates = soup.select("article, .content, .post, .entry, main, #content, .post-content")
+                if content_candidates:
+                    # Use the first content container found
+                    main_element = content_candidates[0]
+                    paragraphs = main_element.find_all("p")
+                    main_content = "\n".join(p.get_text().strip() for p in paragraphs)
+                
+                # If no main content found, get all paragraphs
+                if not main_content:
+                    paragraphs = soup.find_all("p")[:10]  # Limit to first 10 paragraphs
+                    main_content = "\n".join(p.get_text().strip() for p in paragraphs)
+                
                 # Get meta description
-                description = ""
-                meta_desc = soup.find("meta", {"name": "description"}) or soup.find("meta", {"property": "og:description"})
-                if meta_desc:
-                    description = meta_desc.get("content", "")
-                
-                # Get meta keywords
-                keywords = ""
-                meta_keywords = soup.find("meta", {"name": "keywords"})
-                if meta_keywords:
-                    keywords = meta_keywords.get("content", "")
-                
-                # Try different content extraction strategies
-                content = ""
-                
-                # Strategy 1: Look for article or main content
-                article = soup.find("article") or soup.find("main") or soup.find(id=["content", "main", "article"])
-                if article:
-                    paragraphs = article.find_all("p")
-                    content = "\n".join(p.get_text().strip() for p in paragraphs[:10])  # Get up to 10 paragraphs
-                
-                # Strategy 2: If no article found, try common content containers
-                if not content:
-                    for container in ["div.content", "div.article", "div.post", ".post-content", ".article-content"]:
-                        content_div = soup.select_one(container)
-                        if content_div:
-                            paragraphs = content_div.find_all("p")
-                            content = "\n".join(p.get_text().strip() for p in paragraphs[:10])
-                            break
-                
-                # Strategy 3: Fallback to first few paragraphs
-                if not content:
-                    paragraphs = soup.find_all("p")[:10]  # Get first 10 paragraphs
-                    content = "\n".join(p.get_text().strip() for p in paragraphs)
+                meta_desc = ""
+                meta_tag = soup.find("meta", attrs={"name": "description"}) or soup.find("meta", attrs={"property": "og:description"})
+                if meta_tag and "content" in meta_tag.attrs:
+                    meta_desc = meta_tag["content"]
                 
                 # Combine all content
                 scraped_content = f"""
 Title: {title}
-
-Description: {description}
-
-Keywords: {keywords}
+URL: {url}
+Description: {meta_desc}
 
 Content:
-{content}
+{main_content}
 """
                 return scraped_content.strip()
     except Exception as e:
@@ -1479,8 +1600,7 @@ async def scrape_pdf_content(url: str) -> Optional[str]:
 
 URL: {url}
 
-{'\n\n'.join(structured_content[:5])}  # Limit to first 5 sections for brevity
-"""
+""" + '\n\n'.join(structured_content[:5])  # Limit to first 5 sections for brevity
         return formatted_content.strip()
         
     except Exception as e:
@@ -1495,14 +1615,46 @@ URL: {url}
             logger.error(f"Fallback PDF extraction failed: {str(inner_e)}")
             return None
 
+def extract_urls(text: str) -> List[str]:
+    """
+    Extract URLs from text using a regular expression.
+    
+    Args:
+        text (str): The text to extract URLs from
+        
+    Returns:
+        List[str]: A list of URLs found in the text
+    """
+    if not text:
+        return []
+        
+    # This regex matches URLs starting with http:// or https://
+    # and continuing until whitespace or certain punctuation
+    url_regex = r'(https?://[^\s()<>]+(?:\([^\s()<>]+\)|[^\s`!()\[\]{};:\'".,<>?«»""'']))'
+    
+    # Find all matches
+    matches = re.findall(url_regex, text)
+    
+    # Clean up URLs (remove trailing punctuation that might have been included)
+    cleaned_urls = []
+    for url in matches:
+        # Remove trailing punctuation
+        while url and url[-1] in ',.!?:;\'")]}':
+            url = url[:-1]
+        cleaned_urls.append(url)
+    
+    return cleaned_urls
+
 # Main plugin class
 class MatrixToDiscourseBot(Plugin):
     async def start(self) -> None:
         await super().start()
         self.config.load_and_update()
-        self.log.info("MatrixToDiscourseBot started")
-        self.ai_integration = AIIntegration(self.config, self.log)
-        self.discourse_api = DiscourseAPI(self.config, self.log)
+        # Initialize logger as a class attribute
+        self.logger = logger
+        logger.info("MatrixToDiscourseBot started")
+        self.ai_integration = AIIntegration(self.config, logger)
+        self.discourse_api = DiscourseAPI(self.config, logger)
         self.target_audience = self.config.get("target_audience", "community members")
         # Dictionary to map Matrix message IDs to Discourse post IDs
         self.message_id_map = {}
@@ -1512,9 +1664,9 @@ class MatrixToDiscourseBot(Plugin):
         self.periodic_save_task = asyncio.create_task(self.periodic_save())
         
         # Log configuration status
-        self.log.info(f"AI model type: {self.config.get('ai_model_type', 'none')}")
-        self.log.info(f"URL listening enabled: {self.config.get('url_listening', False)}")
-        self.log.info(f"Discourse base URL: {self.config.get('discourse_base_url', 'not configured')}")
+        logger.info(f"AI model type: {self.config.get('ai_model_type', 'none')}")
+        logger.info(f"URL listening enabled: {self.config.get('url_listening', False)}")
+        logger.info(f"Discourse base URL: {self.config.get('discourse_base_url', 'not configured')}")
     
     def safe_config_get(self, key: str, default=None):
         """
@@ -1532,19 +1684,18 @@ class MatrixToDiscourseBot(Plugin):
                 try:
                     return self.config.get(key, default)
                 except TypeError:
-                    # If the get method requires more arguments, try with a default value
-                    self.log.debug(f"RecursiveDict detected for key {key}, using default value: {default}")
+                    # RecursiveDict detected, using default value
                     try:
                         return self.config.get(key, default)
                     except Exception as e:
-                        self.log.warning(f"Error using get method with default for key {key}: {e}")
+                        logger.warning(f"Error using get method with default for key {key}: {e}")
                         return default
             elif isinstance(self.config, dict) and key in self.config:
                 return self.config[key]
             else:
                 return default
         except Exception as e:
-            self.log.warning(f"Error getting config value for key {key}: {e}")
+            logger.warning(f"Error getting config value for key {key}: {e}")
             return default
 
     async def stop(self) -> None:
@@ -1570,7 +1721,7 @@ class MatrixToDiscourseBot(Plugin):
             # Task was cancelled, just exit
             pass
         except Exception as e:
-            self.log.error(f"Error in periodic save task: {e}")
+            logger.error(f"Error in periodic save task: {e}")
 
     async def save_message_id_map(self) -> None:
         """Save the message ID mapping to a JSON file."""
@@ -1586,9 +1737,9 @@ class MatrixToDiscourseBot(Plugin):
             with open(file_path, "w") as f:
                 json.dump(self.message_id_map, f)
                 
-            self.log.info(f"Saved message ID mapping to {file_path}")
+            logger.info(f"Saved message ID mapping to {file_path}")
         except Exception as e:
-            self.log.error(f"Error saving message ID mapping: {e}")
+            logger.error(f"Error saving message ID mapping: {e}")
 
     async def load_message_id_map(self) -> None:
         """Load the message ID mapping from a JSON file."""
@@ -1605,11 +1756,11 @@ class MatrixToDiscourseBot(Plugin):
                 with open(file_path, "r") as f:
                     self.message_id_map = json.load(f)
                     
-                self.log.info(f"Loaded message ID mapping from {file_path} with {len(self.message_id_map)} entries")
+                logger.info(f"Loaded message ID mapping from {file_path} with {len(self.message_id_map)} entries")
             else:
-                self.log.info("No message ID mapping file found, starting with empty mapping")
+                logger.info("No message ID mapping file found, starting with empty mapping")
         except Exception as e:
-            self.log.error(f"Error loading message ID mapping: {e}")
+            logger.error(f"Error loading message ID mapping: {e}")
             self.message_id_map = {}
 
     # Function to get the configuration class
@@ -1627,7 +1778,7 @@ class MatrixToDiscourseBot(Plugin):
         search_trigger = self.config.get("search_trigger", "search")
         url_post_trigger = self.config.get("url_post_trigger", "url")
         
-        self.log.info(f"Command !{help_trigger} triggered.")
+        logger.info(f"Command !{help_trigger} triggered.")
         help_msg = (
             "Welcome to the Community Forum Bot!\n\n"
             f"To create a post on the forum, reply to a message with `!{post_trigger}`.\n"
@@ -1643,10 +1794,9 @@ class MatrixToDiscourseBot(Plugin):
             f"For help, use `!{help_trigger}`."
         )
         await evt.reply(help_msg)
-
     async def handle_search_discourse(self, evt: MessageEvent, query: str) -> None:
         search_trigger = self.config.get("search_trigger", "search")
-        self.log.info(f"Command !{search_trigger} triggered.")
+        logger.info(f"Command !{search_trigger} triggered.")
         await evt.reply("Searching the forum and wiki...")
 
         try:
@@ -1697,7 +1847,7 @@ class MatrixToDiscourseBot(Plugin):
             else:
                 await evt.reply("Failed to perform forum search.")
         except Exception as e:
-            self.log.error(f"Error processing !{self.config['search_trigger']} command: {e}")
+            logger.error(f"Error processing !{self.config['search_trigger']} command: {e}")
             await evt.reply(f"An error occurred: {e}")
 
     # Handle messages with URLs and process them if url_listening is enabled.
@@ -1717,7 +1867,20 @@ class MatrixToDiscourseBot(Plugin):
         message_body = evt.content.body
         urls = extract_urls(message_body)
         if urls:
-            await self.process_link(evt, message_body)
+            # Process the message directly instead of calling process_link
+            # This prevents extracting URLs twice
+            username = evt.sender.split(":")[0]  # Extract the username from the sender
+            
+            # Filter URLs based on patterns and blacklist
+            urls_to_process = [url for url in urls if self.config.should_process_url(url)]
+
+            if not urls_to_process:
+                logger.debug("No URLs matched the configured patterns or all URLs were blacklisted")
+                return
+
+            # Process each URL only once
+            for url in urls_to_process:
+                await self.process_single_url(evt, message_body, url)
 
     # Command to process URLs in replies
     @command.new(name=lambda self: self.config.get("url_post_trigger", "url"), require_subcommand=False)
@@ -1725,7 +1888,7 @@ class MatrixToDiscourseBot(Plugin):
         await self.handle_post_url_to_discourse(evt)
 
     async def handle_post_url_to_discourse(self, evt: MessageEvent) -> None:
-        self.log.info(f"Command !{self.config.get('url_post_trigger', 'url')} triggered.")
+        logger.info(f"Command !{self.config.get('url_post_trigger', 'url')} triggered.")
 
         relation = evt.content.get_reply_to()
         if not relation:
@@ -1733,45 +1896,46 @@ class MatrixToDiscourseBot(Plugin):
             return
 
         # Log the relation object for debugging
-        self.log.debug(f"Relation object: {relation}")
-        self.log.debug(f"Relation inspection: {self.inspect_relation_object(relation)}")
+        logger.debug(f"Relation object: {relation}")
+        logger.debug(f"Relation inspection: {self.inspect_relation_object(relation)}")
 
         # Extract the event ID from the relation object
-        replied_event_id = await self.extract_event_id_from_relation(relation)
-        if not replied_event_id:
-            await evt.reply("Could not identify the message you're replying to.")
+        replied_to_event_id = await self.extract_event_id_from_relation(relation)
+        if not replied_to_event_id:
+            await evt.reply("Could not determine which message you're replying to.")
             return
 
+        # Get the replied-to message
         try:
-            self.log.debug(f"Fetching event with ID: {replied_event_id}")
-            replied_event = await evt.client.get_event(evt.room_id, replied_event_id)
-            
-            if not replied_event:
-                self.log.warning(f"Could not fetch event with ID: {replied_event_id}")
-                await evt.reply("Could not fetch the message you're replying to.")
-                return
-                
-            if not hasattr(replied_event, 'content') or not hasattr(replied_event.content, 'body'):
-                self.log.warning(f"Event has no content or body: {replied_event}")
-                await evt.reply("The message you're replying to has no content.")
-                return
-                
-            message_body = replied_event.content.body
-
-            if not message_body:
-                await evt.reply("The replied-to message is empty.")
+            replied_to_event = await self.client.get_event(evt.room_id, replied_to_event_id)
+            if not replied_to_event:
+                await evt.reply("Could not retrieve the message you're replying to.")
                 return
 
+            # Extract the message body
+            if hasattr(replied_to_event, 'content') and 'body' in replied_to_event.content:
+                message_body = replied_to_event.content['body']
+            else:
+                await evt.reply("The message you're replying to doesn't have a body.")
+                return
+
+            # Extract URLs from the message body
             urls = extract_urls(message_body)
             if not urls:
-                await evt.reply("No URLs found in the replied message.")
+                await evt.reply("No URLs found in the message you're replying to.")
                 return
 
-            await self.process_link(evt, message_body)
+            # Process each URL individually
+            for url in urls:
+                if self.config.should_process_url(url):
+                    await self.process_single_url(evt, message_body, url)
+                else:
+                    logger.debug(f"URL {url} does not match any patterns or is blacklisted.")
+            
         except Exception as e:
-            self.log.error(f"Error processing replied event: {e}", exc_info=True)
-            await evt.reply(f"Error processing the replied message. Please check the logs for details.")
-        
+            logger.error(f"Error handling URL post command: {e}", exc_info=True)
+            await evt.reply(f"Error processing URL: {str(e)}")
+
     async def process_link(self, evt: MessageEvent, message_body: str) -> None:
         urls = extract_urls(message_body)
         username = evt.sender.split(":")[0]  # Extract the username from the sender
@@ -1780,7 +1944,7 @@ class MatrixToDiscourseBot(Plugin):
         urls_to_process = [url for url in urls if self.config.should_process_url(url)]
 
         if not urls_to_process:
-            self.log.debug("No URLs matched the configured patterns or all URLs were blacklisted")
+            logger.debug("No URLs matched the configured patterns or all URLs were blacklisted")
             return
 
         for url in urls_to_process:
@@ -1790,152 +1954,162 @@ class MatrixToDiscourseBot(Plugin):
                 await evt.reply(f"This URL has already been posted, a post summarizing and linking to 12ft.io and archive.org is already on the forum here: {duplicate_url}")
                 continue
 
-            # Scrape content
-            content = await scrape_content(url)
-            if content:
-                # Summarize content if scraping was successful
-                summary = await self.ai_integration.summarize_content(content, user_message=message_body)
-                if not summary:
-                    self.log.warning(f"Summarization failed for URL: {url}")
-                    summary = "Content could not be scraped or summarized."
-            else:
-                self.log.warning(f"Scraping content failed for URL: {url}")
-                summary = "Content could not be scraped or summarized. The original site may have access restrictions."
-
-            # Generate title
-            title = await self.generate_title_for_bypassed_links(message_body)
-            if not title:
-                self.log.info(f"Generating title using URL and domain for: {url}")
-                title = await self.generate_title_for_bypassed_links(f"URL: {url}, Domain: {url.split('/')[2]}")
-                if not title:
-                    title = f"Link from {url.split('/')[2]}"
-
-            # Generate tags
-            tags = await self.ai_integration.generate_tags(content)
-            # Log the generated tags for debugging
-            self.log.debug(f"Generated tags: {tags}")
-            
-            # Ensure tags are valid
-            if tags is None:
-                tags = ["posted-link"]
-            else:
-                # Filter out any invalid tags (empty strings, None values, or tags with invalid characters)
-                tags = [tag for tag in tags if tag and isinstance(tag, str) and re.match(r'^[a-z0-9\-]+$', tag)]
-                
-                # Ensure 'posted-link' is in the tags
-                if "posted-link" not in tags:
-                    tags.append("posted-link")
-                
-                # If all tags were filtered out, use default
-                if not tags:
-                    tags = ["posted-link"]
-                
-                # Limit to 5 tags maximum
-                tags = tags[:5]
-                
-                # Final check to ensure posted-link is still in the tags after limiting
-                if "posted-link" not in tags:
-                    tags[-1] = "posted-link"  # Replace the last tag with posted-link if it got filtered out
-
-            # Generate bypass links
-            bypass_links = generate_bypass_links(url)
-
-            # Check which archive links are working
-            working_archive_links = {}
-            for name, archive_url in bypass_links.items():
-                if name == "original":
-                    working_archive_links[name] = archive_url
-                    continue
-                
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.head(archive_url, timeout=5) as response:
-                            if response.status < 400:  # Any successful status code
-                                working_archive_links[name] = archive_url
-                except Exception:
-                    self.log.debug(f"Archive link {name} is not working for {url}")
-                    continue
-
-            # Prepare archive links section
-            archive_links_section = "**Archive Links:**\n"
-            if len(working_archive_links) <= 1:  # Only original link is working
-                archive_links_section += "No working archive links found. The content may be too recent or behind a paywall.\n"
-            else:
-                for name, archive_url in working_archive_links.items():
-                    if name != "original":
-                        archive_links_section += f"**{name}:** {archive_url}\n"
-
-            # Prepare message body
-            post_body = (
-                f"{summary}\n\n"
-                f"{archive_links_section}\n"
-                f"**Original Link:** <{url}>\n\n"
-                f"User Message: {message_body}\n\n"
-                f"For more on bypassing paywalls, see the [post on bypassing methods](https://forum.irregularchat.com/t/bypass-links-and-methods/98?u=sac)"
-            )
-
-            # Determine category ID based on room ID using the safe_config_get helper
             try:
-                # Get the mapping dictionary with a default empty dict
-                matrix_to_discourse_topic = self.config.get("matrix_to_discourse_topic", {})
+                # Initialize AI integration
+                ai_integration = AIIntegration(self.config, self.log)  # Pass self.log here
+
+                # Scrape content from the URL
+                try:
+                    content = await scrape_content(url)
+                    if content:
+                        logger.info(f"Successfully scraped content from {url} (length: {len(content)} chars)")
+                    else:
+                        logger.warning(f"Failed to scrape content from {url}")
+                except Exception as e:
+                    logger.error(f"Error processing URL {url}: {str(e)}")
+                    # Continue with a default message
+                    content = f"Could not scrape content from {url}. Please visit the link directly."
+
+                # Generate title
+                title = await self.generate_title_for_bypassed_links(message_body)
+                if not title:
+                    logger.info(f"Generating title using URL and domain for: {url}")
+                    title = await self.generate_title_for_bypassed_links(f"URL: {url}, Domain: {url.split('/')[2]}")
+                    if not title:
+                        title = f"Link from {url.split('/')[2]}"
                 
-                # Get the unsorted category ID with a default value
-                unsorted_category_id = self.config.get("unsorted_category_id", 1)  # Default to category ID 1 if not set
+                # Ensure title is within Discourse's 255 character limit
+                if title and len(title) > 250:
+                    title = title[:247] + "..."
                 
-                # Get the category ID for this room with the unsorted category ID as default
-                if isinstance(matrix_to_discourse_topic, dict):
-                    # Regular dict
-                    category_id = matrix_to_discourse_topic.get(evt.room_id, unsorted_category_id)
+                # Generate tags
+                tags = await self.ai_integration.generate_tags(content)
+                # Log the generated tags for debugging
+                logger.debug(f"Generated tags: {tags}")
+                
+                # Ensure tags are valid
+                if tags is None:
+                    tags = ["posted-link"]
                 else:
-                    # RecursiveDict or other object with get method
-                    try:
-                        category_id = matrix_to_discourse_topic.get(evt.room_id, unsorted_category_id)
-                    except TypeError:
-                        # If the get method requires more arguments, try with a default value
-                        self.log.debug("RecursiveDict detected for matrix_to_discourse_topic, using default value")
-                        category_id = unsorted_category_id
+                    # Filter out any invalid tags (empty strings, None values, or tags with invalid characters)
+                    tags = [tag for tag in tags if tag and isinstance(tag, str) and re.match(r'^[a-z0-9\-]+$', tag)]
                     
-                self.log.info(f"Using category ID: {category_id}")
-                self.log.info(f"Final tags being used: {tags}")
-            except Exception as e:
-                self.log.error(f"Error determining category ID: {e}", exc_info=True)
-                # Default to a safe value if we can't determine the category ID
-                category_id = 1  # Default to category ID 1
-                self.log.info(f"Using default category ID: {category_id}")
+                    # Ensure 'posted-link' is in the tags
+                    if "posted-link" not in tags:
+                        tags.append("posted-link")
+                    
+                    # If all tags were filtered out, use default
+                    if not tags:
+                        tags = ["posted-link"]
+                    
+                    # Limit to 5 tags maximum
+                    tags = tags[:5]
+                    
+                    # Final check to ensure posted-link is still in the tags after limiting
+                    if "posted-link" not in tags:
+                        tags[-1] = "posted-link"  # Replace the last tag with posted-link if it got filtered out
 
-            # Create the post on Discourse
-            post_url, error = await self.discourse_api.create_post(
-                title=title,
-                raw=post_body,
-                category_id=category_id,
-                tags=tags,
-            )
+                # Generate bypass links
+                bypass_links = generate_bypass_links(url)
 
-            if post_url:
-                # Extract topic ID from the post URL
-                topic_id = post_url.split("/")[-1]
-                # Store the mapping between Matrix message ID and Discourse topic ID
-                self.message_id_map[evt.event_id] = topic_id
-                self.log.info(f"Stored mapping: Matrix ID {evt.event_id} -> Discourse topic {topic_id}")
-                
-                posted_link_url = f"{self.discourse_api.base_url}/tag/posted-link"
-                # post_url should not be markdown
-                post_url = post_url.replace("[", "").replace("]", "")
-                
-                # Get summary length with a safe default
-                summary_length = self.config.get("summary_length_in_characters", 200)
-                
-                # Get the URL post trigger for the reply instruction
-                url_post_trigger = self.config.get("url_post_trigger", "furl")
-                
-                await evt.reply(
-                    f"🔗 {title}\n\n"
-                    f"**Forum Post URL:** {post_url}\n\n"
-                    f"{summary[:summary_length]}...\n\n"
-                    f"_Reply to this message to add your comment to the forum post._"
+                # Check which archive links are working
+                working_archive_links = {}
+                for name, archive_url in bypass_links.items():
+                    if name == "original":
+                        working_archive_links[name] = archive_url
+                        continue
+                    
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            async with session.head(archive_url, timeout=5) as response:
+                                if response.status < 400:  # Any successful status code
+                                    working_archive_links[name] = archive_url
+                    except Exception:
+                        logger.debug(f"Archive link {name} is not working for {url}")
+                        continue
+
+                # Prepare archive links section
+                archive_links_section = "**Archive Links:**\n"
+                if len(working_archive_links) <= 1:  # Only original link is working
+                    archive_links_section += "No working archive links found. The content may be too recent or behind a paywall.\n"
+                else:
+                    for name, archive_url in working_archive_links.items():
+                        if name != "original":
+                            archive_links_section += f"**{name}:** {archive_url}\n"
+
+                # Prepare message body
+                post_body = (
+                    f"{content}\n\n"
+                    f"{archive_links_section}\n"
+                    f"**Original Link:** <{url}>\n\n"
+                    f"User Message: {message_body}\n\n"
+                    f"For more on bypassing paywalls, see the [post on bypassing methods](https://forum.irregularchat.com/t/bypass-links-and-methods/98?u=sac)"
                 )
-            else:
-                await evt.reply(f"Failed to create post: {error}")
+
+                # Determine category ID based on room ID using the safe_config_get helper
+                try:
+                    # Get the mapping dictionary with a default empty dict
+                    matrix_to_discourse_topic = self.config.get("matrix_to_discourse_topic", {})
+                    
+                    # Get the unsorted category ID with a default value
+                    unsorted_category_id = self.config.get("unsorted_category_id", 1)  # Default to category ID 1 if not set
+                    
+                    # Get the category ID for this room with the unsorted category ID as default
+                    if isinstance(matrix_to_discourse_topic, dict):
+                        # Regular dict
+                        category_id = matrix_to_discourse_topic.get(evt.room_id, unsorted_category_id)
+                    else:
+                        # RecursiveDict or other object with get method
+                        try:
+                            category_id = matrix_to_discourse_topic.get(evt.room_id, unsorted_category_id)
+                        except TypeError:
+                            # If the get method requires more arguments, try with a default value
+                            logger.debug("RecursiveDict detected for matrix_to_discourse_topic, using default value")
+                            category_id = unsorted_category_id
+                        
+                    logger.info(f"Using category ID: {category_id}")
+                    logger.info(f"Final tags being used: {tags}")
+                except Exception as e:
+                    logger.error(f"Error determining category ID: {e}", exc_info=True)
+                    # Default to a safe value if we can't determine the category ID
+                    category_id = 1  # Default to category ID 1
+                    logger.info(f"Using default category ID: {category_id}")
+
+                # Create the post on Discourse
+                post_url, error = await self.discourse_api.create_post(
+                    title=title,
+                    raw=post_body,
+                    category_id=category_id,
+                    tags=tags,
+                )
+
+                if post_url:
+                    # Extract topic ID from the post URL
+                    topic_id = post_url.split("/")[-1]
+                    # Store the mapping between Matrix message ID and Discourse topic ID
+                    self.message_id_map[evt.event_id] = topic_id
+                    logger.info(f"Stored mapping: Matrix ID {evt.event_id} -> Discourse topic {topic_id}")
+                    
+                    posted_link_url = f"{self.discourse_api.base_url}/tag/posted-link"
+                    # post_url should not be markdown
+                    post_url = post_url.replace("[", "").replace("]", "")
+                    
+                    # Get summary length with a safe default
+                    summary_length = self.config.get("summary_length_in_characters", 200)
+                    
+                    # Get the URL post trigger for the reply instruction
+                    url_post_trigger = self.config.get("url_post_trigger", "furl")
+                    
+                    await evt.reply(
+                        f"🔗 {title}\n\n"
+                        f"**Forum Post URL:** {post_url}\n\n"
+                        f"{content[:summary_length]}...\n\n"
+                        f"_Reply to this message to add your comment to the forum post._"
+                    )
+                else:
+                    await evt.reply(f"Failed to create post: {error}")
+            except Exception as e:
+                logger.error(f"Error processing link: {e}", exc_info=True)
 
     async def search_mediawiki(self, query: str) -> Optional[List[Dict]]:
         """
@@ -1944,7 +2118,7 @@ class MatrixToDiscourseBot(Plugin):
         """
         mediawiki_base_url = self.config.get("mediawiki_base_url", None)
         if not mediawiki_base_url:
-            self.log.error("MediaWiki base URL is not configured.")
+            logger.error("MediaWiki base URL is not configured.")
             return None
 
         # Prepare candidate endpoint URLs.
@@ -1970,25 +2144,25 @@ class MatrixToDiscourseBot(Plugin):
         }
         
         for candidate_url in candidate_urls:
-            self.log.debug(f"Trying MediaWiki API candidate URL: {candidate_url} with params: {params}")
+            logger.debug(f"Trying MediaWiki API candidate URL: {candidate_url} with params: {params}")
             try:
                 async with aiohttp.ClientSession(headers=headers) as session:
                     async with session.get(candidate_url, params=params) as response:
                         if response.status == 200:
                             resp_json = await response.json()
-                            self.log.debug(f"Candidate URL {candidate_url} returned: {resp_json}")
+                            logger.debug(f"Candidate URL {candidate_url} returned: {resp_json}")
                             # Check if the response has the expected structure.
                             if "query" in resp_json and "search" in resp_json["query"]:
                                 return resp_json["query"]["search"]
                             else:
-                                self.log.debug(f"Candidate URL {candidate_url} did not return expected keys: {resp_json}")
+                                logger.debug(f"Candidate URL {candidate_url} did not return expected keys: {resp_json}")
                         else:
                             body = await response.text()
-                            self.log.debug(f"Candidate URL {candidate_url} failed with status: {response.status} and body: {body}")
+                            logger.debug(f"Candidate URL {candidate_url} failed with status: {response.status} and body: {body}")
             except Exception as e:
-                self.log.error(f"Error searching MediaWiki at candidate URL {candidate_url}: {e}")
+                logger.error(f"Error searching MediaWiki at candidate URL {candidate_url}: {e}")
         
-        self.log.error("All candidate URLs failed for MediaWiki search.")
+        logger.error("All candidate URLs failed for MediaWiki search.")
         return None
 
     @event.on(EventType.ROOM_MESSAGE)
@@ -2011,18 +2185,18 @@ class MatrixToDiscourseBot(Plugin):
                 return  # Not a reply
             
             # Log the relation object for debugging
-            self.log.debug(f"Matrix reply - Relation object: {relation}")
-            self.log.debug(f"Matrix reply - Relation inspection: {self.inspect_relation_object(relation)}")
+            logger.debug(f"Matrix reply - Relation object: {relation}")
+            logger.debug(f"Matrix reply - Relation inspection: {self.inspect_relation_object(relation)}")
             
             # Get the event ID of the message being replied to
             replied_event_id = await self.extract_event_id_from_relation(relation)
             if not replied_event_id:
-                self.log.warning(f"Could not extract event ID from relation: {relation}")
+                logger.warning(f"Could not extract event ID from relation: {relation}")
                 return
             
             # Log the relation and event ID for debugging
-            self.log.debug(f"Matrix reply - Relation: {relation}, type: {type(relation)}")
-            self.log.debug(f"Matrix reply - Extracted replied_event_id: {replied_event_id}")
+            logger.debug(f"Matrix reply - Relation: {relation}, type: {type(relation)}")
+            logger.debug(f"Matrix reply - Extracted replied_event_id: {replied_event_id}")
             
             # Check if we have a mapping for this message ID
             discourse_topic_id = self.message_id_map.get(replied_event_id)
@@ -2030,7 +2204,7 @@ class MatrixToDiscourseBot(Plugin):
             # If we don't have a direct mapping, check if this is a reply to a bot message
             # that contains a forum link (which would be a reply to a previous post)
             if not discourse_topic_id:
-                self.log.debug(f"No direct mapping found for {replied_event_id}, checking if it's a reply to a bot message")
+                logger.debug(f"No direct mapping found for {replied_event_id}, checking if it's a reply to a bot message")
                 
                 # Try to get the original message to see if it's from the bot and contains a forum link
                 try:
@@ -2046,12 +2220,12 @@ class MatrixToDiscourseBot(Plugin):
                             match = re.search(url_pattern, content)
                             if match:
                                 discourse_topic_id = match.group(1)
-                                self.log.info(f"Found topic ID {discourse_topic_id} in bot message")
+                                logger.info(f"Found topic ID {discourse_topic_id} in bot message")
                 except Exception as e:
-                    self.log.warning(f"Error checking replied message: {e}")
+                    logger.warning(f"Error checking replied message: {e}")
             
             if not discourse_topic_id:
-                self.log.debug(f"No Discourse topic found for Matrix message ID: {replied_event_id}")
+                logger.debug(f"No Discourse topic found for Matrix message ID: {replied_event_id}")
                 return
             
             # Get the content of the reply
@@ -2066,7 +2240,7 @@ class MatrixToDiscourseBot(Plugin):
             
             # If after removing quotes there's no content, ignore
             if not reply_content:
-                self.log.debug("Reply contains only quotes, ignoring")
+                logger.debug("Reply contains only quotes, ignoring")
                 return
             
             # Try to get the user's display name
@@ -2074,14 +2248,14 @@ class MatrixToDiscourseBot(Plugin):
                 user_profile = await self.client.get_profile(evt.sender)
                 display_name = user_profile.displayname if user_profile and user_profile.displayname else "a community member"
             except Exception as e:
-                self.log.warning(f"Could not get display name for {evt.sender}: {e}")
+                logger.warning(f"Could not get display name for {evt.sender}: {e}")
                 display_name = "a community member"
             
             # Format the reply for Discourse
             formatted_reply = f"**Matrix reply from {display_name}**:\n\n{reply_content}"
             
             # Post the reply to Discourse
-            self.log.info(f"Posting reply to Discourse topic {discourse_topic_id}")
+            logger.info(f"Posting reply to Discourse topic {discourse_topic_id}")
             post_url, error = await self.discourse_api.create_post(
                 title=None,  # No title needed for replies
                 raw=formatted_reply,
@@ -2091,12 +2265,12 @@ class MatrixToDiscourseBot(Plugin):
             )
             
             if error:
-                self.log.error(f"Failed to post reply to Discourse: {error}")
+                logger.error(f"Failed to post reply to Discourse: {error}")
             else:
-                self.log.info(f"Successfully posted reply to Discourse: {post_url}")
+                logger.info(f"Successfully posted reply to Discourse: {post_url}")
                 await evt.react("✅")  # React to indicate success
         except Exception as e:
-            self.log.error(f"Error in handle_matrix_reply: {e}", exc_info=True)
+            logger.error(f"Error in handle_matrix_reply: {e}", exc_info=True)
 
     @command.new(name="save-mappings", require_subcommand=False)
     async def save_mappings_command(self, evt: MessageEvent) -> None:
@@ -2112,20 +2286,32 @@ class MatrixToDiscourseBot(Plugin):
     async def is_admin(self, user_id: str) -> bool:
         """Check if a user is an admin."""
         admins = self.config.get("admins", [])
-        self.log.debug(f"Checking if {user_id} is in admins list: {admins}")
+        logger.debug(f"Checking if {user_id} is in admins list: {admins}")
         return user_id in admins
 
     async def generate_title_for_bypassed_links(self, message_body: str) -> Optional[str]:
-        """
-        Generate a title for bypassed links.
+        """Generate a title for a message with bypassed links."""
+        if not self.ai_integration:
+            self.ai_integration = AIIntegration(self.config, logger)
         
-        Args:
-            message_body (str): The message body to generate a title from
+        # Use a more direct prompt for title generation
+        prompt = f"Create a brief (3-10 word) attention-grabbing title for the following content. Focus only on the main topic. DO NOT use markdown formatting like # or **. Do not include any commentary, source attribution, or explanations. Just provide the title: {message_body}"
+        
+        title = await self.ai_integration.generate_title(prompt)
+        
+        # Clean up the title - remove any "Title:" prefix or quotes that the model might add
+        if title:
+            title = title.replace("Title:", "").strip()
+            title = title.strip('"\'')
             
-        Returns:
-            Optional[str]: The generated title, or None if generation fails
-        """
-        return await self.ai_integration.generate_links_title(message_body)
+            # Clean any markdown formatting
+            title = self.clean_markdown_from_title(title)
+            
+            # Ensure the title is not too long for Discourse (max 255 chars)
+            if len(title) > 250:
+                title = title[:247] + "..."
+        
+        return title
 
     async def generate_title(self, message_body: str) -> Optional[str]:
         """
@@ -2137,7 +2323,19 @@ class MatrixToDiscourseBot(Plugin):
         Returns:
             Optional[str]: The generated title, or None if generation fails
         """
-        return await self.ai_integration.generate_title(message_body, use_links_prompt=False)
+        return await self.generate_title_for_bypassed_links(message_body)
+
+    async def api_call_with_retry(self, func, *args, max_retries=3, **kwargs):
+        for attempt in range(max_retries):
+            try:
+                return await func(*args, **kwargs)
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  # Exponential backoff
+                    self.logger.warning(f"API call failed, retrying in {wait_time}s: {e}")
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise
 
     @command.new(name="list-mappings", require_subcommand=False)
     async def list_mappings_command(self, evt: MessageEvent) -> None:
@@ -2207,24 +2405,24 @@ class MatrixToDiscourseBot(Plugin):
             Optional[str]: The event ID if found, None otherwise
         """
         if not relation:
-            self.log.debug("Relation is None")
+            logger.debug("Relation is None")
             return None
         
-        self.log.debug(f"Extracting event ID from relation: {relation} (type: {type(relation)})")
+        logger.debug(f"Extracting event ID from relation: {relation} (type: {type(relation)})")
         
         # Log detailed inspection of the relation object
         inspection = self.inspect_relation_object(relation)
-        self.log.debug(f"Relation inspection:\n{inspection}")
+        logger.debug(f"Relation inspection:\n{inspection}")
         
         # Handle different relation object structures
         if hasattr(relation, 'event_id'):
             # Object-style relation
             event_id = relation.event_id
-            self.log.debug(f"Found event_id attribute: {event_id}")
+            logger.debug(f"Found event_id attribute: {event_id}")
             return event_id
         elif isinstance(relation, str):
             # String-style relation (direct event ID)
-            self.log.debug(f"Relation is a string: {relation}")
+            logger.debug(f"Relation is a string: {relation}")
             return relation
         else:
             # Try to access as dictionary
@@ -2232,13 +2430,13 @@ class MatrixToDiscourseBot(Plugin):
                 # Try attribute access first
                 if hasattr(relation, 'event_id'):
                     event_id = relation.event_id
-                    self.log.debug(f"Found event_id attribute: {event_id}")
+                    logger.debug(f"Found event_id attribute: {event_id}")
                     return event_id
                 
                 # Try dictionary access
                 if isinstance(relation, dict) and 'event_id' in relation:
                     event_id = relation['event_id']
-                    self.log.debug(f"Found event_id key: {event_id}")
+                    logger.debug(f"Found event_id key: {event_id}")
                     return event_id
                 
                 # Try get method - handle RecursiveDict specifically
@@ -2247,19 +2445,19 @@ class MatrixToDiscourseBot(Plugin):
                         # For RecursiveDict, we need to provide a default value
                         event_id = relation.get('event_id', None)
                         if event_id:
-                            self.log.debug(f"Found event_id via get method: {event_id}")
+                            logger.debug(f"Found event_id via get method: {event_id}")
                             return event_id
                     except TypeError as e:
                         # If the get method requires more arguments, try with a default value
                         if "missing 1 required positional argument" in str(e):
-                            self.log.debug("RecursiveDict detected, trying with default value")
+                            logger.debug("RecursiveDict detected, trying with default value")
                             try:
                                 event_id = relation.get('event_id', None)
                                 if event_id:
-                                    self.log.debug(f"Found event_id via get method with default: {event_id}")
+                                    logger.debug(f"Found event_id via get method with default: {event_id}")
                                     return event_id
                             except Exception as inner_e:
-                                self.log.warning(f"Error using get method with default: {inner_e}")
+                                logger.warning(f"Error using get method with default: {inner_e}")
                         else:
                             raise
                 
@@ -2278,16 +2476,16 @@ class MatrixToDiscourseBot(Plugin):
                         
                         if in_reply_to and isinstance(in_reply_to, dict) and 'event_id' in in_reply_to:
                             event_id = in_reply_to['event_id']
-                            self.log.debug(f"Found event_id in m.in_reply_to: {event_id}")
+                            logger.debug(f"Found event_id in m.in_reply_to: {event_id}")
                             return event_id
                     except Exception as e:
-                        self.log.warning(f"Error accessing m.in_reply_to: {e}")
+                        logger.warning(f"Error accessing m.in_reply_to: {e}")
                 
                 # If we get here, we couldn't find the event ID
-                self.log.warning(f"Could not extract event ID from relation: {relation} (type: {type(relation)})")
+                logger.warning(f"Could not extract event ID from relation: {relation} (type: {type(relation)})")
                 return None
             except (AttributeError, TypeError) as e:
-                self.log.warning(f"Error extracting event ID from relation: {e}")
+                logger.warning(f"Error extracting event ID from relation: {e}")
                 return None
 
     def inspect_relation_object(self, relation) -> str:
@@ -2363,3 +2561,355 @@ class MatrixToDiscourseBot(Plugin):
                     result.append(f"Error accessing RecursiveDict key '{key}': {e}")
         
         return "\n".join(result)
+
+    async def process_single_url(self, evt: MessageEvent, message_body: str, url: str) -> None:
+        """Process a single URL from a message and post it to Discourse."""
+        try:
+            # Check for duplicates
+            duplicate_exists, duplicate_url = await self.discourse_api.check_for_duplicate(url)
+            if duplicate_exists:
+                await evt.reply(f"This URL has already been posted, a post summarizing and linking to 12ft.io and archive.org is already on the forum here: {duplicate_url}")
+                return
+
+            # Initialize AI integration
+            ai_integration = AIIntegration(self.config, logger)
+
+            # Scrape content from the URL
+            try:
+                content = await scrape_content(url)
+                if content:
+                    logger.info(f"Successfully scraped content from {url} (length: {len(content)} chars)")
+                else:
+                    logger.warning(f"Failed to scrape content from {url}")
+            except Exception as e:
+                logger.error(f"Error processing URL {url}: {str(e)}")
+                # Continue with a default message
+                content = f"Could not scrape content from {url}. Please visit the link directly."
+
+            # Generate title
+            title = await self.generate_title_for_bypassed_links(message_body)
+            if not title:
+                logger.info(f"Generating title using URL and domain for: {url}")
+                title = await self.generate_title_for_bypassed_links(f"URL: {url}, Domain: {url.split('/')[2]}")
+                if not title:
+                    title = f"Link from {url.split('/')[2]}"
+            
+            # Clean up the title - remove any markdown formatting
+            title = self.clean_markdown_from_title(title)
+            
+            # Ensure title is within Discourse's 255 character limit
+            if title and len(title) > 250:
+                title = title[:247] + "..."
+            
+            # Generate tags
+            tags = await ai_integration.generate_tags(content)
+            # Log the generated tags for debugging
+            logger.debug(f"Generated tags: {tags}")
+            
+            # Ensure tags are valid
+            if tags is None:
+                tags = ["posted-link"]
+            else:
+                # Filter out any invalid tags (empty strings, None values, or tags with invalid characters)
+                tags = [tag for tag in tags if tag and isinstance(tag, str) and re.match(r'^[a-z0-9\-]+$', tag)]
+                
+                # Ensure 'posted-link' is in the tags
+                if "posted-link" not in tags:
+                    tags.append("posted-link")
+                
+                # If all tags were filtered out, use default
+                if not tags:
+                    tags = ["posted-link"]
+                
+                # Limit to 5 tags maximum
+                tags = tags[:5]
+                
+                # Final check to ensure posted-link is still in the tags after limiting
+                if "posted-link" not in tags:
+                    tags[-1] = "posted-link"  # Replace the last tag with posted-link if it got filtered out
+
+            # Generate bypass links
+            bypass_links = generate_bypass_links(url)
+
+            # Check which archive links are working
+            working_archive_links = {}
+            for name, archive_url in bypass_links.items():
+                if name == "original":
+                    working_archive_links[name] = archive_url
+                    continue
+                
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.head(archive_url, timeout=5) as response:
+                            if response.status < 400:  # Any successful status code
+                                working_archive_links[name] = archive_url
+                except Exception:
+                    logger.debug(f"Archive link {name} is not working for {url}")
+                    continue
+
+            # Generate a concise summary and key points using AI
+            summary_prompt = f"Provide a concise executive summary (maximum 300 words) of the following content. Do not include markdown formatting or headers: {content}"
+            key_points_prompt = f"Extract exactly 5 key points from the following content. Format each point as a single complete sentence without markdown formatting or numbering. If there aren't 5 clear points, create logical points based on the available content: {content}"
+            
+            concise_summary = await ai_integration.summarize_content(summary_prompt)
+            if not concise_summary or concise_summary == "Not Enough Information to Summarize":
+                concise_summary = "No summary available. Please visit the original link for details."
+            else:
+                concise_summary = self.clean_markdown_from_summary(concise_summary)
+                
+            key_points = await ai_integration.summarize_content(key_points_prompt)
+            if not key_points or key_points == "Not Enough Information to Summarize":
+                key_points = "- No key points available\n- Please visit the original link for details"
+            else:
+                # Clean markdown from key points
+                key_points = self.clean_markdown_from_summary(key_points)
+                
+                # Ensure key points are properly formatted as bullet points
+                if not key_points.startswith("- "):
+                    # Split by newlines or periods followed by space
+                    points = re.split(r'(?:\n+|\.\s+)', key_points)
+                    # Filter out empty points and format as bullet points
+                    formatted_points = []
+                    for point in points:
+                        point = point.strip()
+                        if point:
+                            # Add period if missing
+                            if not point.endswith('.'):
+                                point += '.'
+                            formatted_points.append(f"- {point}")
+                    
+                    # Join the formatted points
+                    key_points = "\n".join(formatted_points)
+
+            # Prepare archive links section
+            archive_links_section = "**Archive Links:**\n"
+            if len(working_archive_links) <= 1:  # Only original link is working
+                archive_links_section += "No working archive links found. The content may be too recent or behind a paywall.\n"
+            else:
+                for name, archive_url in working_archive_links.items():
+                    if name != "original":
+                        archive_links_section += f"**{name}:** {archive_url}\n"
+
+            # Prepare message body with the new format
+            post_body = (
+                f"**Concise Summary:**\n{concise_summary}\n\n"
+                f"**Key Points:**\n{key_points}\n\n"
+                f"{archive_links_section}\n"
+                f"**Original Link:** <{url}>\n\n"
+                f"User Message: {message_body}\n\n"
+                f"For more on bypassing paywalls, see the [post on bypassing methods](https://forum.irregularchat.com/t/bypass-links-and-methods/98?u=sac)"
+            )
+
+            # Determine category ID based on room ID
+            try:
+                # Get the mapping dictionary with a default empty dict
+                matrix_to_discourse_topic = self.config.get("matrix_to_discourse_topic", {})
+                
+                # Get the unsorted category ID with a default value
+                unsorted_category_id = self.config.get("unsorted_category_id", 1)  # Default to category ID 1 if not set
+                
+                # Get the category ID for this room with the unsorted category ID as default
+                if isinstance(matrix_to_discourse_topic, dict):
+                    # Regular dict
+                    category_id = matrix_to_discourse_topic.get(evt.room_id, unsorted_category_id)
+                else:
+                    # RecursiveDict or other object with get method
+                    try:
+                        category_id = matrix_to_discourse_topic.get(evt.room_id, unsorted_category_id)
+                    except TypeError:
+                        # If the get method requires more arguments, try with a default value
+                        logger.debug("RecursiveDict detected for matrix_to_discourse_topic, using default value")
+                        category_id = unsorted_category_id
+                    
+                logger.info(f"Using category ID: {category_id}")
+                logger.info(f"Final tags being used: {tags}")
+            except Exception as e:
+                logger.error(f"Error determining category ID: {e}", exc_info=True)
+                # Default to a safe value if we can't determine the category ID
+                category_id = 1  # Default to category ID 1
+                logger.info(f"Using default category ID: {category_id}")
+
+            # Create the post on Discourse
+            post_url, error = await self.discourse_api.create_post(
+                title=title,
+                raw=post_body,
+                category_id=category_id,
+                tags=tags,
+            )
+
+            if post_url:
+                # Extract topic ID from the post URL
+                topic_id = post_url.split("/")[-1]
+                # Store the mapping between Matrix message ID and Discourse topic ID
+                self.message_id_map[evt.event_id] = topic_id
+                logger.info(f"Stored mapping: Matrix ID {evt.event_id} -> Discourse topic {topic_id}")
+                
+                # post_url should not be markdown
+                post_url = post_url.replace("[", "").replace("]", "")
+                
+                # Get summary length with a safe default
+                summary_length = self.config.get("summary_length_in_characters", 200)
+                
+                # Create a clean, simplified message for the Matrix chat
+                await evt.reply(
+                    f"🔗 {title}\n\n"
+                    f"**Forum Post:** {post_url}\n\n"
+                    f"{concise_summary}\n\n"
+                    f"_Reply to this message to add your comment to the forum post._"
+                )
+            else:
+                await evt.reply(f"Failed to create post: {error}")
+        except Exception as e:
+            logger.error(f"Error processing URL {url}: {e}", exc_info=True)
+
+    def clean_markdown_from_title(self, title: str) -> str:
+        """Remove markdown formatting from a title."""
+        if not title:
+            return title
+            
+        # Remove markdown headers (# Header)
+        title = re.sub(r'^#+\s+', '', title)
+        
+        # Remove markdown bold/italic (**bold**, *italic*)
+        title = re.sub(r'\*\*(.*?)\*\*', r'\1', title)
+        title = re.sub(r'\*(.*?)\*', r'\1', title)
+        
+        # Remove markdown links ([text](url))
+        title = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', title)
+        
+        # Remove backticks (`code`)
+        title = re.sub(r'`(.*?)`', r'\1', title)
+        
+        return title.strip()
+        
+    def clean_markdown_from_summary(self, summary: str) -> str:
+        """Remove markdown formatting from a summary."""
+        if not summary:
+            return summary
+            
+        # Remove markdown headers (# Header)
+        summary = re.sub(r'^#+\s+', '', summary)
+        summary = re.sub(r'\n#+\s+', '\n', summary)
+        
+        # Remove markdown bold/italic (**bold**, *italic*)
+        summary = re.sub(r'\*\*(.*?)\*\*', r'\1', summary)
+        summary = re.sub(r'\*(.*?)\*', r'\1', summary)
+        
+        # Remove markdown links ([text](url))
+        summary = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', summary)
+        
+        # Remove backticks (`code`)
+        summary = re.sub(r'`(.*?)`', r'\1', summary)
+        
+        # Remove HTML tags
+        summary = re.sub(r'<[^>]+>', '', summary)
+        
+        return summary.strip()
+
+async def scrape_content(url: str) -> Optional[str]:
+    """
+    Scrape content from a URL based on its type.
+    
+    Args:
+        url (str): The URL to scrape
+        
+    Returns:
+        Optional[str]: The scraped content, or None if scraping fails
+    """
+    try:
+        # Check URL type and use appropriate scraper
+        if url.lower().endswith('.pdf'):
+            return await scrape_pdf_content(url)
+        elif "x.com" in url or "twitter.com" in url:
+            return await scrape_twitter_content(url)
+        elif "reddit.com" in url:
+            return await scrape_reddit_content(url)
+        elif "linkedin.com" in url:
+            return await scrape_linkedin_content(url)
+        else:
+            # Fallback to generic scraping
+            content = await generic_scrape_content(url)
+            if content:
+                return content
+            else:
+                # If original URL fails, try archive services
+                logger.info(f"Original URL {url} failed, trying archive services")
+                return await scrape_from_archives(url)
+    except Exception as e:
+        logger.error(f"Error scraping content from {url}: {str(e)}")
+        return None
+
+async def scrape_from_archives(url: str) -> Optional[str]:
+    """
+    Try to scrape content from various archive services when the original URL fails.
+    
+    Args:
+        url (str): The original URL to find in archives
+        
+    Returns:
+        Optional[str]: The scraped content from archives, or None if scraping fails
+    """
+    archive_urls = [
+        f"https://web.archive.org/web/{url}",
+        f"https://archive.is/{url}",
+        f"https://archive.ph/{url}",
+        f"https://archive.today/{url}",
+        f"https://12ft.io/{url}"
+    ]
+    
+    # Try Google Cache as well
+    google_cache_url = f"https://webcache.googleusercontent.com/search?q=cache:{url}"
+    archive_urls.append(google_cache_url)
+    
+    for archive_url in archive_urls:
+        logger.info(f"Trying to scrape from archive: {archive_url}")
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(archive_url, timeout=15) as response:
+                    if response.status == 200:
+                        html = await response.text()
+                        soup = BeautifulSoup(html, 'html.parser')
+                        
+                        # Get title
+                        title = soup.title.string if soup.title else ""
+                        
+                        # Get main content (first few paragraphs)
+                        paragraphs = soup.find_all("p")[:5]  # Get first 5 paragraphs
+                        content = "\n".join(p.get_text().strip() for p in paragraphs)
+                        
+                        if content:
+                            # Combine all content
+                            scraped_content = f"""
+Title: {title} (Retrieved from {archive_url})
+
+Content:
+{content}
+"""
+                            return scraped_content.strip()
+        except Exception as e:
+            logger.error(f"Error scraping from archive {archive_url}: {str(e)}")
+            continue
+    
+    return None
+
+def generate_bypass_links(url: str) -> Dict[str, str]:
+    """
+    Generate bypass links for a URL.
+    
+    Args:
+        url (str): The URL to generate bypass links for
+        
+    Returns:
+        Dict[str, str]: A dictionary of bypass links
+    """
+    links = {
+        "original": url,
+        "12ft": f"https://12ft.io/{url}",
+        "archive.org": f"https://web.archive.org/web/{url}",
+        "archive.is": f"https://archive.is/{url}",
+        "archive.ph": f"https://archive.ph/{url}",
+        "archive.today": f"https://archive.today/{url}",
+    }
+    return links
+
+
