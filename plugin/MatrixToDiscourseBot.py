@@ -2101,10 +2101,11 @@ class MatrixToDiscourseBot(Plugin):
                     url_post_trigger = self.config.get("url_post_trigger", "furl")
                     
                     await evt.reply(
+                        f"_Reply to this message to add a comment directly to the forum post.✅ Will Confirm_\n\n"
                         f"🔗 {title}\n\n"
                         f"**Forum Post URL:** {post_url}\n\n"
                         f"{content[:summary_length]}...\n\n"
-                        f"_Reply to this message to add your comment to the forum post._"
+                        
                     )
                 else:
                     await evt.reply(f"Failed to create post: {error}")
@@ -2752,10 +2753,10 @@ class MatrixToDiscourseBot(Plugin):
                 
                 # Create a clean, simplified message for the Matrix chat
                 await evt.reply(
+                    f"_Reply to this message to add a comment directly to the forum post.✅ Will Confirm_\n\n"
                     f"🔗 {title}\n\n"
                     f"**Forum Post:** {post_url}\n\n"
                     f"{concise_summary}\n\n"
-                    f"_Reply to this message to add your comment to the forum post._"
                 )
             else:
                 await evt.reply(f"Failed to create post: {error}")
