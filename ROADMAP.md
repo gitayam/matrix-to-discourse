@@ -43,7 +43,12 @@ Thanks for checking out the roadmap for the Matrix to Discourse Bot! This docume
 ## Roadmap
 - [ ] Direct message support (working on)
     - [ ] Direct message user with the post link as well
-
+- [ ] Predition handling based on user message
+    - [ ] Create post based on user message with prediction tag
+    - [ ] Handle command and subcommand for predition timeframe
+    - [ ] Handle prediction timeframe creating a reminder method
+    - [ ] Method for marking a predition as correct or incorrect
+    - [ ] Scoreboard for predictions
 - [ ] Enhanced Post Summarization Functionality.(working on) (Branch: Multiple-Message-Summaries) 
     - [ ] Implement `!fpost -n <number>` to summarize the last `<number>` messages into a post.
     - [ ] Implement `!fpost -h <hours>`, `-m <minutes>`, `-d <days>` to summarize messages from a specified timeframe.
