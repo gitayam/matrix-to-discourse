@@ -1,0 +1,37 @@
+[tool.isort]
+profile = "black"
+force_to_top = "typing"
+from_first = true
+combine_as_imports = true
+known_first_party = ["mautrix", "maubot"]
+line_length = 99
+
+[tool.black]
+line-length = 99
+target-version = ["py310"]
+
+[tool.poetry]
+name = "matrix-to-discourse"
+version = "1.0.0"
+description = "A Maubot plugin for posting Matrix messages to Discourse"
+authors = ["May <may@irregularchat.com>"]
+license = "AGPL-3.0-or-later"
+
+[tool.poetry.dependencies]
+python = ">=3.10,<4.0"
+maubot = "^0.5.0"
+openai = "^1.0.0"
+beautifulsoup4 = "^4.12.0"
+pdfminer-six = "^20231228"
+aiohttp = "^3.9.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.0"
+pytest-asyncio = "^0.23.0"
+pytest-mock = "^3.12.0"
+black = "^24.0.0"
+isort = "^5.13.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api" 
