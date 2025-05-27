@@ -9,14 +9,15 @@ This document captures key lessons learned during the development and maintenanc
 3.  [Handling Matrix Events and Commands](#handling-matrix-events-and-commands)
 4.  [Asynchronous Programming Best Practices](#asynchronous-programming-best-practices)
 5.  [Database and State Management](#database-and-state-management)
-6.  [Error Handling and Logging](#error-handling-and-logging)
-7.  [Testing and Deployment](#testing-and-deployment)
-8.  [Plugin Architecture Patterns](#plugin-architecture-patterns)
-9.  [Multi-File Plugin Organization](#multi-file-plugin-organization)
-10. [Service Integration and Inter-Service Communication](#service-integration-and-inter-service-communication)
-11. [Matrix Message Handling, Encryption, and Security](#matrix-message-handling-encryption-and-security)
-12. [Text Transformation and Replacement Patterns](#text-transformation-and-replacement-patterns)
-13. [Standard Operating Procedures](#standard-operating-procedures)
+6.  [Performance Optimization and Security Hardening](#performance-optimization-and-security-hardening)
+7.  [Error Handling and Logging](#error-handling-and-logging)
+8.  [Testing and Deployment](#testing-and-deployment)
+9.  [Plugin Architecture Patterns](#plugin-architecture-patterns)
+10. [Multi-File Plugin Organization](#multi-file-plugin-organization)
+11. [Service Integration and Inter-Service Communication](#service-integration-and-inter-service-communication)
+12. [Matrix Message Handling, Encryption, and Security](#matrix-message-handling-encryption-and-security)
+13. [Text Transformation and Replacement Patterns](#text-transformation-and-replacement-patterns)
+14. [Standard Operating Procedures](#standard-operating-procedures)
 
 -----
 
@@ -877,7 +878,262 @@ async def get_webhooks_in_room(self, room_id: RoomID) -> list[WebhookInfo]:
 
 -----
 
-## 6\. Error Handling and Logging
+## 6\. Performance Optimization and Security Hardening
+
+### ❌ What Didn't Work
+
+**Problem**: Recompiling regex patterns on every function call.
+
+  - Performance bottleneck when processing many messages or URLs.
+  - Unnecessary CPU overhead from repeated pattern compilation.
+  - Example: URL validation regex compiled on every `process_url()` call.
+
+**Problem**: Resource leaks in HTTP clients and database connections.
+
+  - `aiohttp.ClientSession` instances created without proper timeout handling.
+  - Database connections not properly managed in long-running operations.
+  - Memory leaks from growing message ID maps without cleanup.
+
+**Problem**: Race conditions in concurrent message processing.
+
+  - Multiple messages processed simultaneously without locking mechanisms.
+  - Shared state corruption when handling rapid message sequences.
+  - No cleanup of processing locks leading to memory growth.
+
+**Problem**: Missing input validation and rate limiting.
+
+  - No sanitization of URLs or user input before processing.
+  - No rate limiting on expensive operations like AI API calls.
+  - Security vulnerabilities from unvalidated external data.
+
+### ✅ What Worked
+
+**Solution**: Compile patterns during initialization and implement proper resource management.
+
+**1. Pattern Compilation Optimization**:
+```python
+# ❌ Wrong - compiles regex on every call
+class Config(BaseProxyConfig):
+    def is_valid_url(self, url: str) -> bool:
+        pattern = re.compile(r'^https?://.+')  # Compiled every time!
+        return bool(pattern.match(url))
+
+# ✅ Correct - compile once during initialization
+class Config(BaseProxyConfig):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._url_pattern = None
+        self._discourse_pattern = None
+    
+    def do_update(self, helper: ConfigUpdateHelper) -> None:
+        helper.copy("discourse_url")
+        # Compile patterns after config update
+        self._url_pattern = re.compile(r'^https?://.+')
+        self._discourse_pattern = re.compile(rf'^{re.escape(self["discourse_url"])}/t/.+')
+    
+    def is_valid_url(self, url: str) -> bool:
+        return bool(self._url_pattern.match(url))
+```
+
+**2. Proper HTTP Client Management**:
+```python
+# ❌ Wrong - creates new session for every request, causes resource leaks
+async def make_api_call(self, data: dict) -> dict:
+    async with aiohttp.ClientSession() as session:  # New session every time!
+        async with session.post(url, json=data) as response:
+            return await response.json()
+
+# ❌ Wrong - no timeout handling, potential hanging requests
+async def call_api(self, url: str) -> dict:
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:  # No timeout!
+            return await response.json()
+
+# ✅ Correct - use plugin's HTTP client with proper timeout
+class AIIntegration:
+    def __init__(self, config: Config, http_client=None):
+        self.config = config
+        self.http = http_client  # Use plugin's HTTP client
+    
+    async def call_openai_api(self, messages: list) -> str:
+        headers = {"Authorization": f"Bearer {self.config['openai_api_key']}"}
+        data = {"model": self.config['openai_model'], "messages": messages}
+        
+        # Use plugin's HTTP client with proper timeout
+        timeout = aiohttp.ClientTimeout(total=30)
+        try:
+            if self.http:
+                async with self.http.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers=headers, json=data, timeout=timeout
+                ) as response:
+                    response.raise_for_status()
+                    result = await response.json()
+                    return result['choices'][0]['message']['content']
+            else:
+                # Fallback only if necessary
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, headers=headers, json=data, timeout=timeout) as response:
+                        response.raise_for_status()
+                        result = await response.json()
+                        return result['choices'][0]['message']['content']
+        except asyncio.TimeoutError:
+            raise Exception("OpenAI API request timed out")
+        except aiohttp.ClientResponseError as e:
+            raise Exception(f"OpenAI API error: {e.status}")
+
+# ✅ Correct - pass HTTP client to helper classes
+class MatrixToDiscourseBot(Plugin):
+    async def start(self) -> None:
+        await super().start()
+        # Pass self.http to all helper classes
+        self.ai_integration = AIIntegration(self.config, self.http)
+        self.discourse_api = DiscourseAPI(self.config, self.http)
+```
+
+**Critical HTTP Session Management Rules**:
+- **Never create `aiohttp.ClientSession()` in frequently called methods** - causes "Session is closed" errors
+- **Always pass the plugin's `self.http` client to helper classes** during initialization
+- **Use proper timeout handling** with `aiohttp.ClientTimeout(total=seconds)`
+- **Provide fallbacks** for when HTTP client is not available, but prefer the plugin's client
+- **Session closure errors** indicate improper session management - fix by using plugin's HTTP client
+
+**3. Race Condition Prevention**:
+```python
+# ❌ Wrong - no locking, potential race conditions
+class MatrixToDiscourseBot(Plugin):
+    def __init__(self):
+        self.processing_messages = set()
+    
+    async def handle_message(self, evt: MessageEvent):
+        if evt.event_id in self.processing_messages:
+            return
+        self.processing_messages.add(evt.event_id)
+        # Process message...
+        self.processing_messages.remove(evt.event_id)
+
+# ✅ Correct - proper locking with cleanup
+class MatrixToDiscourseBot(Plugin):
+    def __init__(self):
+        self.message_locks = {}
+        self.lock_cleanup_task = None
+    
+    async def start(self) -> None:
+        await super().start()
+        # Start periodic lock cleanup
+        self.lock_cleanup_task = background_task.create(self._cleanup_locks_periodically())
+    
+    async def stop(self) -> None:
+        if self.lock_cleanup_task:
+            self.lock_cleanup_task.cancel()
+        await super().stop()
+    
+    async def handle_message(self, evt: MessageEvent):
+        # Create or get existing lock for this message
+        if evt.event_id not in self.message_locks:
+            self.message_locks[evt.event_id] = asyncio.Lock()
+        
+        async with self.message_locks[evt.event_id]:
+            # Process message safely
+            await self._process_message_content(evt)
+    
+    async def _cleanup_locks_periodically(self):
+        while True:
+            await asyncio.sleep(3600)  # Cleanup every hour
+            # Remove old locks to prevent memory leaks
+            current_time = time.time()
+            old_locks = [
+                event_id for event_id, lock in self.message_locks.items()
+                if not lock.locked() and current_time - lock._created_time > 3600
+            ]
+            for event_id in old_locks:
+                del self.message_locks[event_id]
+```
+
+**4. Input Validation and Rate Limiting**:
+```python
+# ✅ Comprehensive input validation
+class Config(BaseProxyConfig):
+    def validate_url(self, url: str) -> bool:
+        if not url or len(url) > 2048:  # Basic length check
+            return False
+        if not self._url_pattern.match(url):
+            return False
+        # Additional security checks
+        parsed = urllib.parse.urlparse(url)
+        if parsed.hostname in ['localhost', '127.0.0.1', '0.0.0.0']:
+            return False  # Prevent SSRF
+        return True
+
+# ✅ Rate limiting for expensive operations
+class RateLimiter:
+    def __init__(self, max_requests: int, window_seconds: int):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.requests = {}
+    
+    async def check_rate_limit(self, key: str) -> bool:
+        now = time.time()
+        if key not in self.requests:
+            self.requests[key] = []
+        
+        # Clean old requests
+        self.requests[key] = [
+            req_time for req_time in self.requests[key]
+            if now - req_time < self.window_seconds
+        ]
+        
+        if len(self.requests[key]) >= self.max_requests:
+            return False  # Rate limited
+        
+        self.requests[key].append(now)
+        return True
+```
+
+**5. Memory Leak Prevention**:
+```python
+# ✅ Proper cleanup of growing data structures
+class MatrixToDiscourseBot(Plugin):
+    async def start(self) -> None:
+        await super().start()
+        self.message_id_map = {}
+        # Start periodic cleanup
+        self.cleanup_task = background_task.create(self._periodic_cleanup())
+    
+    async def _periodic_cleanup(self):
+        while True:
+            await asyncio.sleep(1800)  # Cleanup every 30 minutes
+            try:
+                # Clean up old message mappings (older than 24 hours)
+                cutoff_time = datetime.now() - timedelta(hours=24)
+                old_messages = [
+                    msg_id for msg_id, timestamp in self.message_id_map.items()
+                    if timestamp < cutoff_time
+                ]
+                for msg_id in old_messages:
+                    del self.message_id_map[msg_id]
+                
+                self.log.debug(f"Cleaned up {len(old_messages)} old message mappings")
+            except Exception as e:
+                self.log.error(f"Error during periodic cleanup: {e}")
+```
+
+### 🔧 Standard Operating Procedure
+
+1.  **Compile regex patterns during initialization**, not on every use.
+2.  **Use plugin's HTTP client (`self.http`)** with proper timeout handling.
+3.  **Implement locking mechanisms** for concurrent operations on shared state.
+4.  **Add periodic cleanup tasks** to prevent memory leaks from growing data structures.
+5.  **Validate all external input** including URLs, user data, and API responses.
+6.  **Implement rate limiting** for expensive operations (AI APIs, external services).
+7.  **Use proper exception handling** with specific timeout and error types.
+8.  **Monitor resource usage** and implement cleanup strategies.
+9.  **Test under load** to identify performance bottlenecks and race conditions.
+10. **Use background tasks for cleanup** with proper cancellation in `stop()`.
+
+-----
+
+## 7\. Error Handling and Logging
 
 ### ❌ What Didn't Work
 
@@ -940,7 +1196,7 @@ await evt.reply("An unexpected error occurred. The bot maintainer has been notif
 
 -----
 
-## 7\. Testing and Deployment
+## 8\. Testing and Deployment
 
 ### ❌ What Didn't Work
 
@@ -1042,6 +1298,193 @@ mock_plugin.client.send_event.assert_not_awaited() # Ensure redact wasn't called
 
 ```
 
+### Plugin Building and Import Issues
+
+**Problem**: Plugin fails to load with `main_class` not found errors.
+
+  - Error: "Main class MatrixToDiscourseBot not in rate_limiter" - occurs when `main_class` doesn't specify module path and maubot looks in the wrong module.
+  - Maubot looks for the main class in the **last** module listed in the `modules` array when no module prefix is specified.
+
+**Problem**: Relative imports fail in maubot plugins.
+
+  - Error: "ImportError: attempted relative import with no known parent package"
+  - Maubot loads modules individually, not as a package, so relative imports (`from .module import ...`) don't work.
+
+**Problem**: Module loading order dependency issues.
+
+  - Error: "NameError: name 'upgrade_table' is not defined" - occurs when modules try to import from modules that haven't been loaded yet.
+  - Maubot loads modules in the order they appear in the `modules` array, so dependencies must be listed first.
+
+**Solution**: Proper `main_class` specification, absolute imports, and correct module ordering.
+
+**`main_class` specification**:
+```yaml
+# ❌ Wrong - will look in last module (rate_limiter)
+modules:
+  - MatrixToDiscourseBot
+  - db
+  - rate_limiter
+main_class: MatrixToDiscourseBot
+
+# ✅ Correct - explicitly specify module
+modules:
+  - MatrixToDiscourseBot
+  - db
+  - rate_limiter
+main_class: MatrixToDiscourseBot/MatrixToDiscourseBot
+```
+
+**Import patterns**:
+```python
+# ❌ Wrong - relative imports don't work
+from .db import upgrade_table, MessageMappingDatabase
+from .rate_limiter import RateLimiter
+
+# ✅ Correct - use absolute imports
+from db import upgrade_table, MessageMappingDatabase
+from rate_limiter import RateLimiter
+```
+
+**Module loading order**:
+```yaml
+# ❌ Wrong - MatrixToDiscourseBot tries to import db before db is loaded
+modules:
+  - MatrixToDiscourseBot  # This imports from db
+  - db                    # But db is loaded after
+
+# ✅ Correct - Dependencies loaded first
+modules:
+  - db                    # Load db first
+  - rate_limiter         # Load rate_limiter second
+  - MatrixToDiscourseBot  # Load main module last (imports from db)
+```
+
+**Problem**: Configuration validation logic doesn't match actual config structure.
+
+  - Error: "Missing required fields for local: api_endpoint, model" - occurs when validation logic uses wrong config key format.
+  - Validation code looks for `local.api_endpoint` but config uses `local_llm.api_endpoint`.
+  - Inconsistent naming between config sections and validation logic.
+
+**Solution**: Ensure validation logic matches actual config structure.
+
+```python
+# ❌ Wrong - validation doesn't match config structure
+def _validate_ai_config(self, model_type: str) -> bool:
+    required_fields = {
+        "local": ["api_endpoint", "model"]  # Looks for local.api_endpoint
+    }
+    config_key = f"{model_type}.{field}"  # Creates "local.api_endpoint"
+
+# ✅ Correct - handle different config key formats
+def _validate_ai_config(self, model_type: str) -> bool:
+    required_fields = {
+        "local": ["api_endpoint", "model"]
+    }
+    # Handle the different config key format for local_llm
+    if model_type == "local":
+        config_key = f"local_llm.{field}"  # Creates "local_llm.api_endpoint"
+    else:
+        config_key = f"{model_type}.{field}"
+```
+
+**Building plugins without mbc**:
+If you don't have `mbc` installed, you can create build scripts:
+
+```python
+#!/usr/bin/env python3
+"""Build script for maubot plugin without requiring mbc."""
+import zipfile
+import yaml
+from pathlib import Path
+
+def build_plugin():
+    # Load metadata
+    with open("plugin/maubot.yaml", "r") as f:
+        meta = yaml.safe_load(f)
+    
+    plugin_id = meta.get("id", "unknown")
+    version = meta.get("version", "0.0.0")
+    output_file = f"{plugin_id}-v{version}.mbp"
+    
+    # Create ZIP file
+    with zipfile.ZipFile(output_file, "w", zipfile.ZIP_DEFLATED) as mbp:
+        # Add maubot.yaml
+        mbp.write("plugin/maubot.yaml", "maubot.yaml")
+        
+        # Add modules
+        for module in meta.get("modules", []):
+            if Path(f"plugin/{module}.py").exists():
+                mbp.write(f"plugin/{module}.py", f"{module}.py")
+        
+        # Add config if exists
+        if meta.get("config") and Path("plugin/base-config.yaml").exists():
+            mbp.write("plugin/base-config.yaml", "base-config.yaml")
+    
+    print(f"Built {output_file}")
+
+if __name__ == "__main__":
+    build_plugin()
+```
+
+**Critical: Always rebuild after fixing imports**:
+When you fix import issues, you MUST rebuild the .mbp file. The error messages will continue to show the old import errors until you rebuild and re-upload the plugin, because the .mbp file contains the old version of your code.
+
+**Problem**: Multiple event handlers for the same event type causing conflicts.
+
+  - Having multiple `@event.on(EventType.ROOM_MESSAGE)` decorators can cause unpredictable behavior.
+  - Event handlers may not trigger as expected or may interfere with each other.
+  - URL processing may fail silently without any logs or error messages.
+  - Only one handler may execute, or handlers may execute in unexpected order.
+
+**Solution**: Use a single event handler and route internally.
+
+```python
+# ❌ Wrong - Multiple event handlers for same event type
+@event.on(EventType.ROOM_MESSAGE)
+async def handle_message(self, evt: MessageEvent) -> None:
+    # URL processing logic
+    if urls := extract_urls(evt.content.body):
+        await self.process_urls(evt, urls)
+
+@event.on(EventType.ROOM_MESSAGE)  # Conflict! May not execute
+async def handle_matrix_reply(self, evt: MessageEvent) -> None:
+    # Reply processing logic
+    if evt.content.get_reply_to():
+        await self.process_reply(evt)
+
+# ✅ Correct - Single event handler with internal routing
+@event.on(EventType.ROOM_MESSAGE)
+async def handle_message(self, evt: MessageEvent) -> None:
+    # Process URLs if found
+    if urls := extract_urls(evt.content.body):
+        await self.process_urls(evt, urls)
+    
+    # Also check for replies (both can happen in same message)
+    await self.handle_matrix_reply(evt)
+
+async def handle_matrix_reply(self, evt: MessageEvent) -> None:
+    """Handle replies - called from main handler, not as separate event handler."""
+    if not evt.content.get_reply_to():
+        return  # Not a reply
+    await self.process_reply(evt)
+```
+
+**Module loading order matters**:
+In `maubot.yaml`, list modules in dependency order. If `ModuleA` imports from `ModuleB`, then `ModuleB` must be listed before `ModuleA` in the `modules` array. Maubot loads modules in the order they're listed, so dependencies must be loaded first.
+
+```yaml
+# ❌ Wrong - MatrixToDiscourseBot tries to import db before db is loaded
+modules:
+  - MatrixToDiscourseBot  # This imports from db
+  - db                    # But db is loaded after
+
+# ✅ Correct - Dependencies loaded first
+modules:
+  - db                    # Load db first
+  - rate_limiter         # Load rate_limiter second
+  - MatrixToDiscourseBot  # Load main module last (imports from db)
+```
+
 ### 🔧 Standard Operating Procedure
 
 1.  **Develop in a Python virtual environment.**
@@ -1050,10 +1493,18 @@ mock_plugin.client.send_event.assert_not_awaited() # Ensure redact wasn't called
 4.  **During active development, use `mbc build --upload`** for quick iterations.
 5.  **Test plugins in a dedicated test Matrix room** with a separate bot account/instance to avoid affecting production.
 6.  **Familiarize yourself with Maubot's web management UI** for uploading, creating instances, and viewing logs in a production environment.
+7.  **Always specify the full module path in `main_class`** when using multiple modules (e.g., `ModuleName/ClassName`).
+8.  **Use absolute imports only** - avoid relative imports (`from .module import ...`) as they don't work in maubot.
+9.  **Order modules by dependency** - list dependencies first in the `modules` array.
+10. **Ensure validation logic matches config structure** - check that validation code uses correct config key formats.
+11. **Always rebuild after fixing imports** - the .mbp file contains cached code until rebuilt.
+12. **Use single event handlers** - avoid multiple `@event.on()` decorators for the same event type.
+13. **Add debug logging for troubleshooting** - use `logger.info()` for important events and `logger.debug()` for detailed tracing.
+14. **Create build scripts** as backup if `mbc` is not available or for CI/CD automation.
 
 -----
 
-## 8\. Plugin Architecture Patterns
+## 9\. Plugin Architecture Patterns
 
 ### ❌ What Didn't Work
 
@@ -1201,7 +1652,7 @@ from mautrix.util import background_task
 
 -----
 
-## 9\. Multi-File Plugin Organization
+## 10\. Multi-File Plugin Organization
 
 ### ❌ What Didn't Work
 
@@ -1399,7 +1850,7 @@ class Commands:
 
 -----
 
-## 10\. Service Integration and Inter-Service Communication
+## 11\. Service Integration and Inter-Service Communication
 
 ### ❌ What Didn't Work
 
@@ -1695,7 +2146,7 @@ class PluginCoordinator:
 
 -----
 
-## 11\. Matrix Message Handling, Encryption, and Security
+## 12\. Matrix Message Handling, Encryption, and Security
 
 ### ❌ What Didn't Work
 
@@ -2052,7 +2503,7 @@ async def send_webhook_payload(self, url: str, data: dict) -> None:
 
 -----
 
-## 12\. Text Transformation and Replacement Patterns
+## 13\. Text Transformation and Replacement Patterns
 
 ### ❌ What Didn't Work
 
@@ -2450,7 +2901,7 @@ class CommandPlugin(Plugin):
 
 -----
 
-## 13\. Standard Operating Procedures
+## 14\. Standard Operating Procedures
 
 ### Plugin Development Workflow
 
@@ -2468,8 +2919,80 @@ class CommandPlugin(Plugin):
 12. **Add comprehensive logging**: Use `self.log` at appropriate levels.
 13. **Set up code quality**: Add `pyproject.toml`, `.pre-commit-config.yaml`, `.gitlab-ci.yml`.
 14. **Write unit tests**: Cover core logic, edge cases, and error conditions.
-15. **Iterate quickly**: Use `mbc build --upload` and test in a dev Matrix room.
-16. **Refine and Document**: Clean up code, add comments, update documentation.
+15. **Build and deploy**: Use `build_plugin.py` script with version increment for proper releases.
+16. **Iterate quickly**: Use `mbc build --upload` and test in a dev Matrix room.
+17. **Refine and Document**: Clean up code, add comments, update documentation.
+
+### Plugin Build and Release Process
+
+**CRITICAL**: Always use the `build_plugin.py` script for building releases, not manual zip commands.
+
+1.  **Version Management**:
+    - **Always increment version in `maubot.yaml`** before building
+    - Use semantic versioning (e.g., 1.0.9 → 1.0.10 for bug fixes, 1.0.10 → 1.1.0 for features)
+    - Version must be incremented for each release to avoid conflicts
+
+2.  **Build Process**:
+    ```bash
+    # Increment version in plugin/maubot.yaml first
+    # Then build using the script
+    python3 build_plugin.py -v
+    ```
+    
+3.  **Build Script Benefits**:
+    - Automatically includes all required files based on `maubot.yaml`
+    - Generates proper filename with version (e.g., `may.irregularchat.matrix_to_discourse-v1.0.10.mbp`)
+    - Validates plugin structure before building
+    - Provides verbose output for debugging build issues
+
+4.  **What Gets Included**:
+    - All modules listed in `maubot.yaml`
+    - `base-config.yaml` if config is enabled
+    - Extra files specified in `extra_files`
+    - Proper directory structure for multi-module plugins
+
+5.  **Common Build Issues**:
+    - **Missing modules**: Ensure all Python files are listed in `modules`
+    - **Wrong main_class**: Must match actual class name and module structure
+    - **Missing dependencies**: List all required packages in `dependencies`
+    - **File not found**: Check `extra_files` paths are correct
+
+### Critical Event Handler Issues
+
+**CRITICAL**: Multiple event handlers for the same event type can cause conflicts and silent failures.
+
+**Problem**: Having multiple `@event.on(EventType.ROOM_MESSAGE)` decorators in the same plugin class can cause only one handler to execute, leading to features silently failing.
+
+**Example of problematic code**:
+```python
+@event.on(EventType.ROOM_MESSAGE)
+async def handle_message(self, evt: MessageEvent) -> None:
+    # URL processing logic
+    pass
+
+@event.on(EventType.ROOM_MESSAGE)  # CONFLICT!
+async def handle_matrix_reply(self, evt: MessageEvent) -> None:
+    # Reply handling logic
+    pass
+```
+
+**Solution**: Use a single event handler and route internally:
+```python
+@event.on(EventType.ROOM_MESSAGE)
+async def handle_message(self, evt: MessageEvent) -> None:
+    # Handle URL processing
+    if self.should_process_urls(evt):
+        await self.process_urls(evt)
+    
+    # Handle replies
+    if self.is_reply(evt):
+        await self.handle_reply(evt)
+```
+
+**Debugging Tips**:
+- Add comprehensive debug logging to see which handlers are actually executing
+- Use single event handlers with internal routing for complex message processing
+- Test all features after any event handler changes
 
 ### Debugging Workflow
 
@@ -2499,6 +3022,8 @@ class CommandPlugin(Plugin):
   - [ ] Unit tests exist for critical components.
   - [ ] Bot accounts have necessary Matrix power levels for administrative commands.
   - [ ] Sensitive information is handled via configuration, not hardcoded.
+  - [ ] **Version incremented in `maubot.yaml` before each build**.
+  - [ ] **Plugin built using `build_plugin.py` script, not manual zip commands**.
 
 ### Testing Strategy
 
