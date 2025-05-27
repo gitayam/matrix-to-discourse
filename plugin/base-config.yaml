@@ -146,3 +146,18 @@ url_blacklist:
   - https?://(www\.)?drive\.amazon\.com/.*
   - https?://(www\.)?drive\.yandex\.com/.*
   - https?://(www\.)?drive\.yahoo\.com/.*
+
+# Anti-spam configuration (based on ReactBot patterns)
+antispam:
+  # Room-based rate limiting
+  room:
+    max: 5      # Maximum posts per room
+    delay: 60   # Within this many minutes
+  # User-based rate limiting  
+  user:
+    max: 10     # Maximum posts per user
+    delay: 60   # Within this many minutes
+
+# Admin users who can use admin commands
+admins:
+  - "@admin:example.com"
