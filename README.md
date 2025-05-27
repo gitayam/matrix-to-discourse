@@ -1,12 +1,77 @@
-
 # Matrix to Discourse Bot 
 [Latest v1.2](https://github.com/gitayam/matrix-to-discourse/releases/tag/v1.2)
 
 A Maubot plugin that allows users to post messages from a Matrix room to a Discourse forum and search the forum. This version includes support for multiple AI API options, such as OpenAI, Google Gemini, local LLM models, and the ability to disable AI altogether.
 
+## Configuration
+
+The bot can be configured to use different AI models for generating titles, summaries, and tags for posts. The following AI models are supported:
+
+- OpenAI (GPT)
+- Google (Gemini)
+- Local LLM (including OpenWebUI)
+- None (no AI model)
+
+### Using OpenWebUI
+
+You can configure the bot to use OpenWebUI in two ways:
+
+#### Option 1: Using the OpenAI compatibility mode
+
+If your OpenWebUI instance supports the OpenAI API format, you can configure the bot to use it by setting the `ai_model_type` to `openai` and updating the OpenAI configuration:
+
+```yaml
+ai_model_type: "openai"
+
+openai:
+  api_key: "your_openwebui_api_key"
+  api_endpoint: "https://your-openwebui-instance.com/v1/chat/completions"
+  model: "your_model_name"
+  max_tokens: 3000
+  temperature: 1
+```
+
+#### Option 2: Using the Local LLM mode
+
+You can also configure the bot to use OpenWebUI by setting the `ai_model_type` to `local` and updating the Local LLM configuration:
+
+```yaml
+ai_model_type: "local"
+
+local_llm:
+  connection_type: "api"
+  api_endpoint: "https://your-openwebui-instance.com/v1/chat/completions"
+  api_format: "openai"
+  auth_method: "bearer"
+  api_key: "your_openwebui_api_key"
+  model: "your_model_name"
+  max_tokens: 2048
+  temperature: 0.7
+```
+
+### Example Configuration for OpenWebUI
+
+Here's an example configuration for using OpenWebUI with the provided API key:
+
+```yaml
+ai_model_type: "local"
+
+local_llm:
+  connection_type: "api"
+  api_endpoint: "https://ai.untitledstartup.xyz/v1/chat/completions"
+  api_format: "openai"
+  auth_method: "bearer"
+  api_key: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjU2NTgxNTExLTg4NjktNDRjMy05NmEyLWJmZTU3MWE2MTAxYiJ9._-DLbG_CVufD9JkxWgexotuMsdYkrp7Nrh4OBgc0sQk"
+  model: "your_model_name"
+  max_tokens: 2048
+  temperature: 0.7
+```
+
+Replace `your_model_name` with the name of the model you want to use.
+
 ## Typical Use
 
-To use this bot you’ll need:
+To use this bot you'll need:
 
 - Maubot installed and running on your Matrix server
 - For the most robust and easiest matrix and maubot setup, consider using: matrix-docker-ansible-deploy
@@ -15,7 +80,7 @@ To use this bot you’ll need:
 
 Download the matrix-to-discourse.mbp file from the releases page and follow the instructions in the Maubot documentation to install the plugin.
 
-You’ll upload the plugin to your Maubot instance, configure it with your AI API key (if applicable), Discourse API key, and Discourse categories and information. You can then use the bot to post messages from Matrix to Discourse and search Discourse from Matrix.
+You'll upload the plugin to your Maubot instance, configure it with your AI API key (if applicable), Discourse API key, and Discourse categories and information. You can then use the bot to post messages from Matrix to Discourse and search Discourse from Matrix.
 
 Maubot Instance is typically at: https://matrix.domain.tld/_matrix/maubot/
 
@@ -127,7 +192,7 @@ Commands
 
 `!fpost`
 
-Creates a post on the Discourse forum using the replied-to message’s content.
+Creates a post on the Discourse forum using the replied-to message's content.
 
 - Usage:
 - !fpost [title] — Posts the replied-to message with the given title to Discourse.
