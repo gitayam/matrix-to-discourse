@@ -23,15 +23,60 @@ from mautrix.types import (
 from maubot import Plugin, MessageEvent
 from maubot.handlers import command, event
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
+from mautrix.util.async_db import UpgradeTable
 # from selenium import webdriver
 # from selenium.webdriver.chrome.options import Options
 # BeautifulSoup4 since maubot image uses alpine linux
 from bs4 import BeautifulSoup
+
+# Import our database module
+from .db import upgrade_table, MessageMappingDatabase
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Config class to manage configuration
 class Config(BaseProxyConfig):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Compile regex patterns once during initialization for performance
+        self._compiled_blacklist_patterns = None
+        self._compiled_whitelist_patterns = None
+        self._patterns_compiled = False
+
+    def _compile_patterns(self):
+        """Compile regex patterns for URL filtering to improve performance."""
+        if self._patterns_compiled:
+            return
+            
+        try:
+            blacklist = self.get("url_blacklist", [])
+            whitelist = self.get("url_patterns", ["https?://.*"])
+            
+            self._compiled_blacklist_patterns = []
+            self._compiled_whitelist_patterns = []
+            
+            for pattern in blacklist:
+                try:
+                    self._compiled_blacklist_patterns.append(re.compile(pattern, re.IGNORECASE))
+                except re.error as e:
+                    logger.warning(f"Invalid blacklist regex pattern '{pattern}': {e}")
+            
+            for pattern in whitelist:
+                try:
+                    self._compiled_whitelist_patterns.append(re.compile(pattern, re.IGNORECASE))
+                except re.error as e:
+                    logger.warning(f"Invalid whitelist regex pattern '{pattern}': {e}")
+            
+            self._patterns_compiled = True
+            logger.debug(f"Compiled {len(self._compiled_blacklist_patterns)} blacklist and {len(self._compiled_whitelist_patterns)} whitelist patterns")
+        except Exception as e:
+            logger.error(f"Error compiling URL patterns: {e}")
+            # Fallback to empty lists
+            self._compiled_blacklist_patterns = []
+            self._compiled_whitelist_patterns = []
+            self._patterns_compiled = True
+
     def do_update(self, helper: ConfigUpdateHelper) -> None:
         # AI model type
         helper.copy("ai_model_type")  # AI model type: openai, google, local, none
@@ -44,10 +89,16 @@ class Config(BaseProxyConfig):
         helper.copy("openai.temperature")
         
         # Local LLM configuration
-        helper.copy("local_llm.model_path")
+        helper.copy("local_llm.connection_type")
         helper.copy("local_llm.api_endpoint")
+        helper.copy("local_llm.api_format")
+        helper.copy("local_llm.auth_method")
+        helper.copy("local_llm.api_key")
+        helper.copy("local_llm.model_path")
+        helper.copy("local_llm.model")
         helper.copy("local_llm.max_tokens")
         helper.copy("local_llm.temperature")
+        helper.copy("local_llm.top_p")
         
         # Google Gemini configuration
         helper.copy("google.api_key")
@@ -73,7 +124,7 @@ class Config(BaseProxyConfig):
         helper.copy("summary_length_in_characters") # length of the summary preview
         
         # Admin configuration
-        helper.copy("admins", [])  # List of admin user IDs, default to empty list
+        helper.copy("admins")  # List of admin user IDs
         
         # MediaWiki configuration
         helper.copy("mediawiki_base_url")  # Base URL for the community MediaWiki wiki
@@ -82,20 +133,17 @@ class Config(BaseProxyConfig):
         helper.copy("mediawiki.username")
         helper.copy("mediawiki.password")
         
-        # Handle URL patterns and blacklist separately
-        if "url_patterns" in helper.base:
-            self["url_patterns"] = list(helper.base["url_patterns"])
-        else:
-            self["url_patterns"] = ["https?://.*"]  # Default to match all URLs
-
-        if "url_blacklist" in helper.base:
-            self["url_blacklist"] = list(helper.base["url_blacklist"])
-        else:
-            self["url_blacklist"] = []
+        # URL patterns and blacklist
+        helper.copy("url_patterns")
+        helper.copy("url_blacklist")
+        
+        # Reset compiled patterns when config is updated
+        self._patterns_compiled = False
 
     def should_process_url(self, url: str) -> bool:
         """
         Check if a URL should be processed based on patterns and blacklist.
+        Uses compiled regex patterns for better performance.
 
         Args:
         url (str): The URL to check
@@ -103,11 +151,32 @@ class Config(BaseProxyConfig):
         Returns:
             bool: True if the URL should be processed, False otherwise
         """
-        # First check blacklist
-        for blacklist_pattern in self["url_blacklist"]:
-            if re.search(blacklist_pattern, url, re.IGNORECASE):
-                logger.debug(f"URL {url} matches blacklist pattern {blacklist_pattern}")
+        if not url:
+            return False
+            
+        # Ensure patterns are compiled
+        self._compile_patterns()
+        
+        # Input sanitization - basic URL validation
+        try:
+            parsed = urlparse(url)
+            if not parsed.scheme or not parsed.netloc:
+                logger.debug(f"Invalid URL format: {url}")
                 return False
+        except Exception as e:
+            logger.warning(f"Error parsing URL {url}: {e}")
+            return False
+        
+        # First check blacklist using compiled patterns
+        for pattern in self._compiled_blacklist_patterns:
+            try:
+                if pattern.search(url):
+                    logger.debug(f"URL {url} matches blacklist pattern {pattern.pattern}")
+                    return False
+            except Exception as e:
+                logger.warning(f"Error matching blacklist pattern: {e}")
+                continue
+        
         # To prevent infinite recursion, exclude URLs pointing to the bot's own mediawiki or discourse instances if configured
         # Exclude URLs pointing to the bot's own mediawiki or discourse instances if configured
         if 'mediawiki_base_url' in self and self['mediawiki_base_url']:
@@ -122,19 +191,26 @@ class Config(BaseProxyConfig):
 
             # Extract base domain from discourse_base_url
             # many services such as notepads, and other links are typical in the communtiy chats but create redudant posts in discourse
-            parsed_url = urlparse(self['discourse_base_url'])
-            base_domain = parsed_url.netloc #netloc is the network location of the URL
+            try:
+                parsed_url = urlparse(self['discourse_base_url'])
+                base_domain = parsed_url.netloc #netloc is the network location of the URL
 
-            # Add base domain and all subdomains to the blacklist
-            if base_domain in url:
-                logger.debug(f"URL {url} matches base domain {base_domain} of discourse_base_url")
-                return False
+                # Add base domain and all subdomains to the blacklist
+                if base_domain in url:
+                    logger.debug(f"URL {url} matches base domain {base_domain} of discourse_base_url")
+                    return False
+            except Exception as e:
+                logger.warning(f"Error parsing discourse_base_url: {e}")
 
-        # Then check whitelist patterns
-        for pattern in self["url_patterns"]:
-            if re.search(pattern, url, re.IGNORECASE):
-                logger.debug(f"URL {url} matches whitelist pattern {pattern}")
-                return True
+        # Then check whitelist patterns using compiled patterns
+        for pattern in self._compiled_whitelist_patterns:
+            try:
+                if pattern.search(url):
+                    logger.debug(f"URL {url} matches whitelist pattern {pattern.pattern}")
+                    return True
+            except Exception as e:
+                logger.warning(f"Error matching whitelist pattern: {e}")
+                continue
     
         # If no patterns match, don't process the URL
         return False
@@ -151,18 +227,25 @@ class Config(BaseProxyConfig):
             The value from the config, or the default value if not found
         """
         try:
-            if hasattr(self.config, 'get'):
+            # Check if this is a RecursiveDict (mautrix config type)
+            if 'RecursiveDict' in str(type(self)):
+                # RecursiveDict requires the default value as a positional argument
                 try:
-                    return self.config.get(key, default)
+                    return self.get(key, default)
                 except TypeError:
-                    # RecursiveDict detected, using default value
+                    # If the signature is different, try with positional args
                     try:
-                        return self.config.get(key, default)
-                    except Exception as e:
-                        logger.warning(f"Error using get method with default for key {key}: {e}")
+                        if key in self:
+                            return self[key]
+                        else:
+                            return default
+                    except Exception:
                         return default
-            elif isinstance(self.config, dict) and key in self.config:
-                return self.config[key]
+            elif hasattr(self, 'get'):
+                # Standard dict-like get method
+                return self.get(key, default)
+            elif isinstance(self, dict) and key in self:
+                return self[key]
             else:
                 return default
         except Exception as e:
@@ -170,21 +253,60 @@ class Config(BaseProxyConfig):
             return default
 
     def validate_config(self):
-        """Validate critical configuration parameters."""
+        """Validate critical configuration parameters with format validation."""
         critical_params = [
-            ("discourse_base_url", "Discourse base URL"),
-            ("discourse_api_key", "Discourse API key"),
-            ("discourse_api_username", "Discourse API username"),
+            ("discourse_base_url", "Discourse base URL", lambda x: x and x.startswith("http")),
+            ("discourse_api_key", "Discourse API key", lambda x: x and len(x.strip()) > 0),
+            ("discourse_api_username", "Discourse API username", lambda x: x and len(x.strip()) > 0),
         ]
         
         missing = []
-        for param, desc in critical_params:
-            if not self.config.get(param):
+        for param, desc, validator in critical_params:
+            value = self.safe_config_get(param)
+            if not value or not validator(value):
                 missing.append(desc)
         
         if missing:
-            self.logger.error(f"Missing critical configuration: {', '.join(missing)}")
+            logger.error(f"Invalid configuration: {', '.join(missing)}")
             return False
+        
+        # Validate AI model specific config
+        ai_model_type = self.safe_config_get("ai_model_type", "none")
+        if ai_model_type != "none":
+            if not self._validate_ai_config(ai_model_type):
+                return False
+        
+        return True
+
+    def _validate_ai_config(self, model_type: str) -> bool:
+        """Validate AI model specific configuration."""
+        required_fields = {
+            "openai": ["api_key", "api_endpoint", "model"],
+            "google": ["api_key", "api_endpoint", "model"],
+            "local": ["api_endpoint", "model"]
+        }
+        
+        if model_type not in required_fields:
+            logger.error(f"Unknown AI model type: {model_type}")
+            return False
+        
+        missing = []
+        for field in required_fields[model_type]:
+            config_key = f"{model_type}.{field}"
+            value = self.safe_config_get(config_key)
+            if not value or (isinstance(value, str) and len(value.strip()) == 0):
+                missing.append(field)
+        
+        if missing:
+            logger.error(f"Missing required fields for {model_type}: {', '.join(missing)}")
+            return False
+        
+        # Additional validation for specific fields
+        if model_type in ["openai", "google", "local"]:
+            endpoint = self.safe_config_get(f"{model_type}.api_endpoint")
+            if endpoint and not endpoint.startswith("http"):
+                logger.error(f"Invalid API endpoint for {model_type}: must start with http")
+                return False
         
         return True
 
@@ -197,9 +319,39 @@ class AIIntegration:
     def __init__(self, config, log):
         self.config = config
         self.logger = log  # Change logger to self.logger
-        self.target_audience = config.get("target_audience", "community members")
+        self.target_audience = self.safe_config_get("target_audience", "community members")
         # Initialize Discourse API
         self.discourse_api = DiscourseAPI(self.config, log)  # Pass log directly
+
+    def safe_config_get(self, key: str, default=None):
+        """
+        Safely get a value from the config, handling RecursiveDict properly.
+        """
+        try:
+            # Check if this is a RecursiveDict (mautrix config type)
+            if 'RecursiveDict' in str(type(self.config)):
+                # RecursiveDict requires the default value as a positional argument
+                try:
+                    return self.config.get(key, default)
+                except TypeError:
+                    # If the signature is different, try with positional args
+                    try:
+                        if key in self.config:
+                            return self.config[key]
+                        else:
+                            return default
+                    except Exception:
+                        return default
+            elif hasattr(self.config, 'get'):
+                # Standard dict-like get method
+                return self.config.get(key, default)
+            elif isinstance(self.config, dict) and key in self.config:
+                return self.config[key]
+            else:
+                return default
+        except Exception as e:
+            self.logger.warning(f"Error getting config value for key {key}: {e}")
+            return default
 
     def clean_markdown_from_title(self, title: str) -> str:
         """Remove markdown formatting from a title."""
@@ -222,7 +374,7 @@ class AIIntegration:
         return title.strip()
 
     async def generate_title(self, message_body: str, use_links_prompt: bool = False) -> Optional[str]:
-        ai_model_type = self.config.get("ai_model_type", "none")
+        ai_model_type = self.safe_config_get("ai_model_type", "none")
 
         if ai_model_type == "openai":
             return await self.generate_openai_title(message_body, use_links_prompt)
@@ -237,7 +389,7 @@ class AIIntegration:
     async def generate_links_title(self, message_body: str) -> Optional[str]:
         """Create a title focusing on linked content."""
         prompt = f"Create a concise and relevant title for the following content, focusing on the key message and linked content:\n\n{message_body}"
-        ai_model_type = self.config.get("ai_model_type", "none")
+        ai_model_type = self.safe_config_get("ai_model_type", "none")
 
         if ai_model_type == "openai":
             return await self.generate_openai_title(prompt, True)
@@ -257,7 +409,7 @@ class AIIntegration:
             # Otherwise, use the standard summary prompt
             prompt = f"""Summarize the following content, including any user-provided context or quotes. If there isn't enough information, please just say 'Not Enough Information to Summarize':\n\nContent:\n{content}\n\nUser Message:\n{user_message}"""
         
-        ai_model_type = self.config.get("ai_model_type", "none")
+        ai_model_type = self.safe_config_get("ai_model_type", "none")
         if ai_model_type == "openai":
             return await self.summarize_with_openai(prompt)
         elif ai_model_type == "local":
@@ -302,164 +454,201 @@ class AIIntegration:
             # Create prompt with existing tags context accepts tag list and content , pass user message for context
             prompt = self.TAG_PROMPT.format(tag_list=tag_list, user_message=user_message)
 
-            if self.config["ai_model_type"] == "openai":
-                try:
-                    api_key = self.config.get('openai.api_key', None)
-                    if not api_key:
-                        self.logger.error("OpenAI API key is not configured.")
-                        return ["posted-link"]  # Return default tag
-
-                    headers = {
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {api_key}"
-                    }
-
-                    data = {
-                        "model": self.config["openai.model"],
-                        "messages": [{"role": "user", "content": prompt}],
-                        "max_tokens": self.config["openai.max_tokens"],
-                        "temperature": self.config["openai.temperature"],
-                    }
-
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(self.config["openai.api_endpoint"], headers=headers, json=data) as response:
-                            response_text = await response.text()
-                            try:
-                                response_json = json.loads(response_text)
-                            except json.JSONDecodeError as e:
-                                self.logger.error(f"Error decoding OpenAI response: {e}\nResponse text: {response_text}")
-                                return ["posted-link"]  # Return default tag
-
-                            if response.status == 200:
-                                tags_text = response_json["choices"][0]["message"]["content"].strip()
-                                tags = [tag.strip().lower().replace(' ', '-') for tag in tags_text.split(',')]
-                                # Filter out invalid tags
-                                tags = [tag for tag in tags if tag and re.match(r'^[a-z0-9\-]+$', tag)]
-                                
-                                # Always include posted-link tag
-                                if "posted-link" not in tags:
-                                    tags.append("posted-link")
-                                
-                                # Limit to 5 tags maximum (including posted-link)
-                                tags = tags[:5]
-                                
-                                # Ensure we have at least one tag
-                                if not tags:
-                                    return ["posted-link"]
-                                return tags
-                            else:
-                                self.logger.error(f"OpenAI API error: {response.status} {response_json}")
-                                return ["posted-link"]  # Return default tag
-                except Exception as e:
-                    tb = traceback.format_exc()
-                    self.logger.error(f"Error generating tags with OpenAI: {e}\n{tb}")
-                    return ["posted-link"]  # Return default tag
-
-            elif self.config["ai_model_type"] == "local":
-                headers = {
-                    "Content-Type": "application/json"
-                }
-                
-                # Use OpenAI-compatible format
-                data = {
-                    "model": self.config.get("local_llm.model", "gemma-2-2b-it"),
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": min(self.config.get("local_llm.max_tokens", 500), 1000),  # Limit to 1000 tokens
-                    "temperature": self.config.get("local_llm.temperature", 0.7),
-                }
-
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(self.config["local_llm.api_endpoint"], headers=headers, json=data) as response:
-                        response_text = await response.text()
-                        try:
-                            response_json = json.loads(response_text)
-                        except json.JSONDecodeError as e:
-                            self.logger.error(f"Error decoding Local LLM response: {e}\nResponse text: {response_text}")
-                            return ["posted-link"]  # Return default tag
-
-                        if response.status == 200:
-                            # Handle OpenAI-compatible format
-                            if "choices" in response_json and len(response_json["choices"]) > 0:
-                                if "message" in response_json["choices"][0]:
-                                    tags_text = response_json["choices"][0]["message"]["content"].strip()
-                                    tags = [tag.strip().lower().replace(' ', '-') for tag in tags_text.split(',')]
-                                    # Filter out invalid tags
-                                    tags = [tag for tag in tags if tag and re.match(r'^[a-z0-9\-]+$', tag)]
-                                    
-                                    # Always include posted-link tag
-                                    if "posted-link" not in tags:
-                                        tags.append("posted-link")
-                                    
-                                    # Limit to 5 tags maximum (including posted-link)
-                                    tags = tags[:5]
-                                    
-                                    # Ensure we have at least one tag
-                                    if not tags:
-                                        return ["posted-link"]
-                                    return tags
-                            return ["posted-link"]  # Return default tag if no valid response
-                        else:
-                            self.logger.error(f"Local LLM API error: {response.status} {response_json}")
-                            return ["posted-link"]  # Return default tag
-
+            ai_model_type = self.safe_config_get("ai_model_type", "none")
+            
+            if ai_model_type == "openai":
+                return await self._generate_tags_openai(prompt)
+            elif ai_model_type == "local":
+                return await self._generate_tags_local(prompt)
             elif ai_model_type == "google":
-                api_key = self.config.get('google.api_key', None)
-                if not api_key:
-                    self.logger.error("Google API key is not configured.")
-                    return ["posted-link"]  # Return default tag
-
-                headers = {
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}"
-                }
-                
-                data = {
-                    "model": self.config["google.model"],
-                    "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                    "generationConfig": {
-                        "maxOutputTokens": self.config["google.max_tokens"],
-                        "temperature": self.config["google.temperature"],
-                    }
-                }
-
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(self.config["google.api_endpoint"], headers=headers, json=data) as response:
-                        response_text = await response.text()
-                        try:
-                            response_json = json.loads(response_text)
-                        except json.JSONDecodeError as e:
-                            self.logger.error(f"Error decoding Google API response: {e}\nResponse text: {response_text}")
-                            return ["posted-link"]  # Return default tag
-
-                        if response.status == 200:
-                            tags_text = response_json["candidates"][0]["content"]["parts"][0]["text"].strip()
-                            tags = [tag.strip().lower().replace(' ', '-') for tag in tags_text.split(',')]
-                            # Filter out invalid tags
-                            tags = [tag for tag in tags if tag and re.match(r'^[a-z0-9\-]+$', tag)]
-                            
-                            # Always include posted-link tag
-                            if "posted-link" not in tags:
-                                tags.append("posted-link")
-                            
-                            # Limit to 5 tags maximum (including posted-link)
-                            tags = tags[:5]
-                            
-                            # Ensure we have at least one tag
-                            if not tags:
-                                return ["posted-link"]
-                            return tags
-                        else:
-                            self.logger.error(f"Google API error: {response.status} {response_json}")
-                            return ["posted-link"]  # Return default tag
-
+                return await self._generate_tags_google(prompt)
             else:
-                self.logger.error(f"Unknown AI model type: {self.config['ai_model_type']}")
+                self.logger.error(f"Unknown AI model type: {ai_model_type}")
                 return ["posted-link"]  # Return default tag
 
         except Exception as e:
             tb = traceback.format_exc()
             self.logger.error(f"Error generating tags: {e}\n{tb}")
             return ["posted-link"]  # Return default tag instead of "fix-me"
+
+    async def _generate_tags_openai(self, prompt: str) -> List[str]:
+        """Generate tags using OpenAI API with improved error handling and timeouts."""
+        try:
+            api_key = self.config.get('openai.api_key', None)
+            if not api_key:
+                self.logger.error("OpenAI API key is not configured.")
+                return ["posted-link"]
+
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}"
+            }
+
+            data = {
+                "model": self.config.get("openai.model", "gpt-4o-mini"),
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": min(self.config.get("openai.max_tokens", 500), 1000),
+                "temperature": self.config.get("openai.temperature", 0.7),
+            }
+
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(self.config.get("openai.api_endpoint"), headers=headers, json=data) as response:
+                    response_text = await response.text()
+                    try:
+                        response_json = json.loads(response_text)
+                    except json.JSONDecodeError as e:
+                        self.logger.error(f"Error decoding OpenAI response: {e}\nResponse text: {response_text}")
+                        return ["posted-link"]
+
+                    if response.status == 200:
+                        if "choices" not in response_json or not response_json["choices"]:
+                            self.logger.error("Invalid OpenAI response format: no choices")
+                            return ["posted-link"]
+                            
+                        tags_text = response_json["choices"][0]["message"]["content"].strip()
+                        return self._process_tag_response(tags_text)
+                    else:
+                        self.logger.error(f"OpenAI API error: {response.status} {response_json}")
+                        return ["posted-link"]
+        except asyncio.TimeoutError:
+            self.logger.error("OpenAI API request timed out")
+            return ["posted-link"]
+        except Exception as e:
+            tb = traceback.format_exc()
+            self.logger.error(f"Error generating tags with OpenAI: {e}\n{tb}")
+            return ["posted-link"]
+
+    async def _generate_tags_local(self, prompt: str) -> List[str]:
+        """Generate tags using Local LLM API with improved error handling and timeouts."""
+        try:
+            headers = {"Content-Type": "application/json"}
+            
+            # Add authentication if configured
+            auth_method = self.config.get("local_llm.auth_method", "")
+            api_key = self.config.get("local_llm.api_key", "")
+            
+            if auth_method == "bearer" and api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            elif auth_method == "api_key" and api_key:
+                headers["X-API-Key"] = api_key
+            
+            # Use OpenAI-compatible format
+            data = {
+                "model": self.config.get("local_llm.model", "gemma-2-2b-it"),
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": min(self.config.get("local_llm.max_tokens", 500), 1000),
+                "temperature": self.config.get("local_llm.temperature", 0.7),
+            }
+
+            timeout = aiohttp.ClientTimeout(total=60)  # Longer timeout for local models
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(self.config.get("local_llm.api_endpoint"), headers=headers, json=data) as response:
+                    response_text = await response.text()
+                    try:
+                        response_json = json.loads(response_text)
+                    except json.JSONDecodeError as e:
+                        self.logger.error(f"Error decoding Local LLM response: {e}\nResponse text: {response_text}")
+                        return ["posted-link"]
+
+                    if response.status == 200:
+                        # Handle OpenAI-compatible format
+                        if "choices" in response_json and len(response_json["choices"]) > 0:
+                            if "message" in response_json["choices"][0]:
+                                tags_text = response_json["choices"][0]["message"]["content"].strip()
+                                return self._process_tag_response(tags_text)
+                        return ["posted-link"]
+                    else:
+                        self.logger.error(f"Local LLM API error: {response.status} {response_json}")
+                        return ["posted-link"]
+        except asyncio.TimeoutError:
+            self.logger.error("Local LLM API request timed out")
+            return ["posted-link"]
+        except Exception as e:
+            tb = traceback.format_exc()
+            self.logger.error(f"Error generating tags with Local LLM: {e}\n{tb}")
+            return ["posted-link"]
+
+    async def _generate_tags_google(self, prompt: str) -> List[str]:
+        """Generate tags using Google API with improved error handling and timeouts."""
+        try:
+            api_key = self.config.get('google.api_key', None)
+            if not api_key:
+                self.logger.error("Google API key is not configured.")
+                return ["posted-link"]
+
+            headers = {
+                "Content-Type": "application/json",
+                "x-goog-api-key": api_key  # Google uses x-goog-api-key header
+            }
+            
+            data = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "maxOutputTokens": min(self.config.get("google.max_tokens", 500), 1000),
+                    "temperature": self.config.get("google.temperature", 0.7),
+                }
+            }
+
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(self.config.get("google.api_endpoint"), headers=headers, json=data) as response:
+                    response_text = await response.text()
+                    try:
+                        response_json = json.loads(response_text)
+                    except json.JSONDecodeError as e:
+                        self.logger.error(f"Error decoding Google API response: {e}\nResponse text: {response_text}")
+                        return ["posted-link"]
+
+                    if response.status == 200:
+                        if "candidates" not in response_json or not response_json["candidates"]:
+                            self.logger.error("Invalid Google API response format: no candidates")
+                            return ["posted-link"]
+                            
+                        candidate = response_json["candidates"][0]
+                        if "content" not in candidate or "parts" not in candidate["content"]:
+                            self.logger.error("Invalid Google API response format: missing content/parts")
+                            return ["posted-link"]
+                            
+                        tags_text = candidate["content"]["parts"][0]["text"].strip()
+                        return self._process_tag_response(tags_text)
+                    else:
+                        self.logger.error(f"Google API error: {response.status} {response_json}")
+                        return ["posted-link"]
+        except asyncio.TimeoutError:
+            self.logger.error("Google API request timed out")
+            return ["posted-link"]
+        except Exception as e:
+            tb = traceback.format_exc()
+            self.logger.error(f"Error generating tags with Google: {e}\n{tb}")
+            return ["posted-link"]
+
+    def _process_tag_response(self, tags_text: str) -> List[str]:
+        """Process and validate tag response from AI models."""
+        if not tags_text:
+            return ["posted-link"]
+            
+        # Split by comma and clean up tags
+        tags = [tag.strip().lower().replace(' ', '-') for tag in tags_text.split(',')]
+        
+        # Filter out invalid tags (only allow alphanumeric and hyphens)
+        valid_tags = []
+        for tag in tags:
+            if tag and re.match(r'^[a-z0-9\-]+$', tag) and len(tag) <= 50:  # Max length check
+                valid_tags.append(tag)
+        
+        # Always include posted-link tag
+        if "posted-link" not in valid_tags:
+            valid_tags.append("posted-link")
+        
+        # Limit to 5 tags maximum (including posted-link)
+        valid_tags = valid_tags[:5]
+        
+        # Ensure we have at least one tag
+        if not valid_tags:
+            return ["posted-link"]
+            
+        return valid_tags
 
     generate_title_prompt = "Create a brief (3-10 word) attention-grabbing title for the {target_audience} for the following post on the community forum: {message_body}"
     generate_links_title_prompt = "Create a brief (3-10 word) attention-grabbing title for the following post on the community forum include the source and title of the linked content: {message_body}"
@@ -1480,9 +1669,16 @@ async def generic_scrape_content(url: str) -> Optional[str]:
             "Upgrade-Insecure-Requests": "1"
         }
         
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=15) as response:
-                if response.status != 200:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status == 403:
+                    logger.warning(f"Access forbidden for URL: {url}")
+                    return None
+                elif response.status == 404:
+                    logger.warning(f"URL not found: {url}")
+                    return None
+                elif response.status != 200:
                     logger.error(f"Failed to fetch URL: {url}, status: {response.status}")
                     return None
                 
@@ -1528,8 +1724,14 @@ Content:
 {main_content}
 """
                 return scraped_content.strip()
+    except aiohttp.ClientError as e:
+        logger.error(f"Network error while scraping {url}: {str(e)}")
+        return None
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout while scraping {url}")
+        return None
     except Exception as e:
-        logger.error(f"Error in generic scraping for {url}: {str(e)}")
+        logger.exception(f"Unexpected error in generic scraping for {url}: {str(e)}")
         return None
 
 async def scrape_pdf_content(url: str) -> Optional[str]:
@@ -1653,20 +1855,36 @@ class MatrixToDiscourseBot(Plugin):
         # Initialize logger as a class attribute
         self.logger = logger
         logger.info("MatrixToDiscourseBot started")
+        
+        # Validate configuration before proceeding
+        if not self.config.validate_config():
+            logger.error("Configuration validation failed. Bot may not function properly.")
+        
         self.ai_integration = AIIntegration(self.config, logger)
         self.discourse_api = DiscourseAPI(self.config, logger)
-        self.target_audience = self.config.get("target_audience", "community members")
+        self.target_audience = self.safe_config_get("target_audience", "community members")
+        
         # Dictionary to map Matrix message IDs to Discourse post IDs
         self.message_id_map = {}
+        
+        # Message processing locks to prevent race conditions
+        self._message_locks = {}
+        self._lock_cleanup_task = None
+        
         # Load existing message ID mappings
         await self.load_message_id_map()
-        # Start periodic save task
+        
+        # Start periodic save task with better error handling
         self.periodic_save_task = asyncio.create_task(self.periodic_save())
         
+        # Start lock cleanup task
+        self._lock_cleanup_task = asyncio.create_task(self._cleanup_old_locks())
+        
         # Log configuration status
-        logger.info(f"AI model type: {self.config.get('ai_model_type', 'none')}")
-        logger.info(f"URL listening enabled: {self.config.get('url_listening', False)}")
-        logger.info(f"Discourse base URL: {self.config.get('discourse_base_url', 'not configured')}")
+        logger.info(f"AI model type: {self.safe_config_get('ai_model_type', 'none')}")
+        logger.info(f"URL listening enabled: {self.safe_config_get('url_listening', False)}")
+        logger.info(f"Discourse base URL: {self.safe_config_get('discourse_base_url', 'not configured')}")
+        logger.info("MatrixToDiscourseBot initialization completed")
     
     def safe_config_get(self, key: str, default=None):
         """
@@ -1680,16 +1898,23 @@ class MatrixToDiscourseBot(Plugin):
             The value from the config, or the default value if not found
         """
         try:
-            if hasattr(self.config, 'get'):
+            # Check if this is a RecursiveDict (mautrix config type)
+            if 'RecursiveDict' in str(type(self.config)):
+                # RecursiveDict requires the default value as a positional argument
                 try:
                     return self.config.get(key, default)
                 except TypeError:
-                    # RecursiveDict detected, using default value
+                    # If the signature is different, try with positional args
                     try:
-                        return self.config.get(key, default)
-                    except Exception as e:
-                        logger.warning(f"Error using get method with default for key {key}: {e}")
+                        if key in self.config:
+                            return self.config[key]
+                        else:
+                            return default
+                    except Exception:
                         return default
+            elif hasattr(self.config, 'get'):
+                # Standard dict-like get method
+                return self.config.get(key, default)
             elif isinstance(self.config, dict) and key in self.config:
                 return self.config[key]
             else:
@@ -1699,16 +1924,52 @@ class MatrixToDiscourseBot(Plugin):
             return default
 
     async def stop(self) -> None:
-        # Cancel periodic save task
-        if hasattr(self, 'periodic_save_task') and not self.periodic_save_task.done():
-            self.periodic_save_task.cancel()
+        logger.info("Stopping MatrixToDiscourseBot...")
+        
+        # Cancel all background tasks
+        tasks_to_cancel = []
+        
+        # Periodic save task
+        if hasattr(self, 'periodic_save_task') and self.periodic_save_task and not self.periodic_save_task.done():
+            tasks_to_cancel.append(('periodic_save_task', self.periodic_save_task))
+        
+        # Lock cleanup task
+        if hasattr(self, '_lock_cleanup_task') and self._lock_cleanup_task and not self._lock_cleanup_task.done():
+            tasks_to_cancel.append(('_lock_cleanup_task', self._lock_cleanup_task))
+        
+        # Cancel all tasks
+        for task_name, task in tasks_to_cancel:
+            logger.debug(f"Cancelling {task_name}")
+            task.cancel()
+        
+        # Wait for all tasks to complete cancellation
+        for task_name, task in tasks_to_cancel:
             try:
-                await self.periodic_save_task
+                await task
             except asyncio.CancelledError:
-                pass
+                logger.debug(f"{task_name} cancelled successfully")
+            except Exception as e:
+                logger.error(f"Error stopping {task_name}: {e}", exc_info=True)
+        
         # Save message ID mappings before stopping
-        await self.save_message_id_map()
+        try:
+            await self.save_message_id_map()
+            logger.info("Message ID mappings saved successfully")
+        except Exception as e:
+            logger.error(f"Error saving message ID mappings during shutdown: {e}", exc_info=True)
+        
+        # Clear message locks
+        self._message_locks.clear()
+        
+        # Close any open HTTP sessions if they exist
+        if hasattr(self, 'http') and self.http:
+            try:
+                await self.http.close()
+            except Exception as e:
+                logger.error(f"Error closing HTTP session: {e}")
+        
         await super().stop()
+        logger.info("MatrixToDiscourseBot stopped successfully")
 
     async def periodic_save(self) -> None:
         """Periodically save the message ID mapping to ensure we don't lose data."""
@@ -1716,12 +1977,44 @@ class MatrixToDiscourseBot(Plugin):
             while True:
                 # Save every hour
                 await asyncio.sleep(3600)
-                await self.save_message_id_map()
+                try:
+                    await self.save_message_id_map()
+                    logger.debug("Periodic save completed successfully")
+                except Exception as e:
+                    logger.error(f"Error during periodic save: {e}")
         except asyncio.CancelledError:
-            # Task was cancelled, just exit
-            pass
+            logger.info("Periodic save task cancelled")
+            raise
         except Exception as e:
-            logger.error(f"Error in periodic save task: {e}")
+            logger.error(f"Unexpected error in periodic save task: {e}")
+            raise
+
+    async def _cleanup_old_locks(self) -> None:
+        """Periodically clean up old message processing locks to prevent memory leaks."""
+        try:
+            while True:
+                await asyncio.sleep(300)  # Clean up every 5 minutes
+                current_time = asyncio.get_event_loop().time()
+                
+                # Remove locks older than 10 minutes
+                old_locks = []
+                for message_id, (lock, timestamp) in self._message_locks.items():
+                    if current_time - timestamp > 600:  # 10 minutes
+                        old_locks.append(message_id)
+                
+                for message_id in old_locks:
+                    if message_id in self._message_locks:
+                        del self._message_locks[message_id]
+                
+                if old_locks:
+                    logger.debug(f"Cleaned up {len(old_locks)} old message locks")
+                    
+        except asyncio.CancelledError:
+            logger.info("Lock cleanup task cancelled")
+            raise
+        except Exception as e:
+            logger.error(f"Error in lock cleanup task: {e}")
+            raise
 
     async def save_message_id_map(self) -> None:
         """Save the message ID mapping to a JSON file."""
@@ -1767,16 +2060,21 @@ class MatrixToDiscourseBot(Plugin):
     @classmethod
     def get_config_class(cls) -> Type[BaseProxyConfig]:
         return Config
+    
+    # Function to get the database upgrade table
+    @classmethod
+    def get_db_upgrade_table(cls) -> UpgradeTable:
+        return upgrade_table
     # Command to handle the help event
-    @command.new(name=lambda self: self.config.get("help_trigger", "help"), require_subcommand=False)
+    @command.new(name=lambda self: self.safe_config_get("help_trigger", "help"), require_subcommand=False)
     async def help_command(self, evt: MessageEvent) -> None:
         await self.handle_help(evt)
 
     async def handle_help(self, evt: MessageEvent) -> None:
-        help_trigger = self.config.get("help_trigger", "help")
-        post_trigger = self.config.get("post_trigger", "fpost")
-        search_trigger = self.config.get("search_trigger", "search")
-        url_post_trigger = self.config.get("url_post_trigger", "url")
+        help_trigger = self.safe_config_get("help_trigger", "help")
+        post_trigger = self.safe_config_get("post_trigger", "fpost")
+        search_trigger = self.safe_config_get("search_trigger", "search")
+        url_post_trigger = self.safe_config_get("url_post_trigger", "url")
         
         logger.info(f"Command !{help_trigger} triggered.")
         help_msg = (
@@ -1850,11 +2148,20 @@ class MatrixToDiscourseBot(Plugin):
             logger.error(f"Error processing !{self.config['search_trigger']} command: {e}")
             await evt.reply(f"An error occurred: {e}")
 
+    async def _get_message_lock(self, message_id: str) -> asyncio.Lock:
+        """Get or create a lock for message processing to prevent race conditions."""
+        current_time = asyncio.get_event_loop().time()
+        
+        if message_id not in self._message_locks:
+            self._message_locks[message_id] = (asyncio.Lock(), current_time)
+        
+        return self._message_locks[message_id][0]
+
     # Handle messages with URLs and process them if url_listening is enabled.
     @event.on(EventType.ROOM_MESSAGE)
     async def handle_message(self, evt: MessageEvent) -> None:
         # If URL listening is disabled, don't process URL patterns.
-        if not self.config.get("url_listening", False):
+        if not self.safe_config_get("url_listening", False):
             return
 
         if evt.sender == self.client.mxid:
@@ -1863,27 +2170,42 @@ class MatrixToDiscourseBot(Plugin):
         if evt.content.msgtype != MessageType.TEXT:
             return
 
-        # Extract URLs from the message body.
-        message_body = evt.content.body
-        urls = extract_urls(message_body)
-        if urls:
-            # Process the message directly instead of calling process_link
-            # This prevents extracting URLs twice
-            username = evt.sender.split(":")[0]  # Extract the username from the sender
-            
-            # Filter URLs based on patterns and blacklist
-            urls_to_process = [url for url in urls if self.config.should_process_url(url)]
+        # Get message lock to prevent race conditions
+        message_lock = await self._get_message_lock(evt.event_id)
+        
+        # Check if message is already being processed
+        if message_lock.locked():
+            logger.debug(f"Message {evt.event_id} is already being processed, skipping")
+            return
 
-            if not urls_to_process:
-                logger.debug("No URLs matched the configured patterns or all URLs were blacklisted")
-                return
+        async with message_lock:
+            try:
+                # Extract URLs from the message body.
+                message_body = evt.content.body
+                urls = extract_urls(message_body)
+                if urls:
+                    # Process the message directly instead of calling process_link
+                    # This prevents extracting URLs twice
+                    try:
+                        username = evt.sender.split(":")[0] if ":" in evt.sender else evt.sender  # Extract the username from the sender
+                    except (AttributeError, IndexError):
+                        username = str(evt.sender)
+                    
+                    # Filter URLs based on patterns and blacklist
+                    urls_to_process = [url for url in urls if self.config.should_process_url(url)]
 
-            # Process each URL only once
-            for url in urls_to_process:
-                await self.process_single_url(evt, message_body, url)
+                    if not urls_to_process:
+                        logger.debug("No URLs matched the configured patterns or all URLs were blacklisted")
+                        return
+
+                    # Process each URL only once
+                    for url in urls_to_process:
+                        await self.process_single_url(evt, message_body, url)
+            except Exception as e:
+                logger.error(f"Error processing message {evt.event_id}: {e}", exc_info=True)
 
     # Command to process URLs in replies
-    @command.new(name=lambda self: self.config.get("url_post_trigger", "url"), require_subcommand=False)
+    @command.new(name=lambda self: self.safe_config_get("url_post_trigger", "url"), require_subcommand=False)
     async def post_url_to_discourse_command(self, evt: MessageEvent) -> None:
         await self.handle_post_url_to_discourse(evt)
 
@@ -1938,7 +2260,10 @@ class MatrixToDiscourseBot(Plugin):
 
     async def process_link(self, evt: MessageEvent, message_body: str) -> None:
         urls = extract_urls(message_body)
-        username = evt.sender.split(":")[0]  # Extract the username from the sender
+        try:
+            username = evt.sender.split(":")[0] if ":" in evt.sender else evt.sender  # Extract the username from the sender
+        except (AttributeError, IndexError):
+            username = str(evt.sender)
         
         # Filter URLs based on patterns and blacklist
         urls_to_process = [url for url in urls if self.config.should_process_url(url)]
@@ -1974,9 +2299,13 @@ class MatrixToDiscourseBot(Plugin):
                 title = await self.generate_title_for_bypassed_links(message_body)
                 if not title:
                     logger.info(f"Generating title using URL and domain for: {url}")
-                    title = await self.generate_title_for_bypassed_links(f"URL: {url}, Domain: {url.split('/')[2]}")
-                    if not title:
-                        title = f"Link from {url.split('/')[2]}"
+                    try:
+                        domain = urlparse(url).netloc or url.split('/')[2] if len(url.split('/')) > 2 else url
+                        title = await self.generate_title_for_bypassed_links(f"URL: {url}, Domain: {domain}")
+                        if not title:
+                            title = f"Link from {domain}"
+                    except (IndexError, ValueError):
+                        title = f"Link from {url}"
                 
                 # Ensure title is within Discourse's 255 character limit
                 if title and len(title) > 250:
@@ -2020,8 +2349,9 @@ class MatrixToDiscourseBot(Plugin):
                         continue
                     
                     try:
-                        async with aiohttp.ClientSession() as session:
-                            async with session.head(archive_url, timeout=5) as response:
+                        timeout = aiohttp.ClientTimeout(total=5)
+                        async with aiohttp.ClientSession(timeout=timeout) as session:
+                            async with session.head(archive_url) as response:
                                 if response.status < 400:  # Any successful status code
                                     working_archive_links[name] = archive_url
                     except Exception:
@@ -2085,10 +2415,16 @@ class MatrixToDiscourseBot(Plugin):
 
                 if post_url:
                     # Extract topic ID from the post URL
-                    topic_id = post_url.split("/")[-1]
-                    # Store the mapping between Matrix message ID and Discourse topic ID
-                    self.message_id_map[evt.event_id] = topic_id
-                    logger.info(f"Stored mapping: Matrix ID {evt.event_id} -> Discourse topic {topic_id}")
+                    try:
+                        topic_id = post_url.split("/")[-1]
+                        if topic_id.isdigit():
+                            # Store the mapping between Matrix message ID and Discourse topic ID
+                            self.message_id_map[evt.event_id] = topic_id
+                            logger.info(f"Stored mapping: Matrix ID {evt.event_id} -> Discourse topic {topic_id}")
+                        else:
+                            logger.warning(f"Invalid topic ID extracted from URL: {topic_id}")
+                    except (IndexError, AttributeError):
+                        logger.error(f"Failed to extract topic ID from post URL: {post_url}")
                     
                     posted_link_url = f"{self.discourse_api.base_url}/tag/posted-link"
                     # post_url should not be markdown
@@ -2101,8 +2437,8 @@ class MatrixToDiscourseBot(Plugin):
                     url_post_trigger = self.config.get("url_post_trigger", "furl")
                     
                     await evt.reply(
-                        f"_Reply to this message to add a comment directly to the forum post.✅ Will Confirm_\n\n"
                         f"🔗 {title}\n\n"
+                        f"_Reply to this message to add a comment directly to the forum post.✅ Will Confirm_\n\n"
                         f"**Forum Post URL:** {post_url}\n\n"
                         f"{content[:summary_length]}...\n\n"
                         
@@ -2147,7 +2483,8 @@ class MatrixToDiscourseBot(Plugin):
         for candidate_url in candidate_urls:
             logger.debug(f"Trying MediaWiki API candidate URL: {candidate_url} with params: {params}")
             try:
-                async with aiohttp.ClientSession(headers=headers) as session:
+                timeout = aiohttp.ClientTimeout(total=10)
+                async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
                     async with session.get(candidate_url, params=params) as response:
                         if response.status == 200:
                             resp_json = await response.json()
@@ -2753,8 +3090,8 @@ class MatrixToDiscourseBot(Plugin):
                 
                 # Create a clean, simplified message for the Matrix chat
                 await evt.reply(
-                    f"_Reply to this message to add a comment directly to the forum post.✅ Will Confirm_\n\n"
                     f"🔗 {title}\n\n"
+                    f"_Reply to this message to add a comment directly to the forum post.✅ Will Confirm_\n\n"
                     f"**Forum Post:** {post_url}\n\n"
                     f"{concise_summary}\n\n"
                 )
