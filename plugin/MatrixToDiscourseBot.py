@@ -30,7 +30,7 @@ from mautrix.util.async_db import UpgradeTable
 from bs4 import BeautifulSoup
 
 # Import our database module
-from .db import upgrade_table, MessageMappingDatabase
+from db import upgrade_table, MessageMappingDatabase
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -215,42 +215,7 @@ class Config(BaseProxyConfig):
         # If no patterns match, don't process the URL
         return False
 
-    def safe_config_get(self, key: str, default=None):
-        """
-        Safely get a value from the config, handling RecursiveDict properly.
-        
-        Args:
-            key (str): The config key to get
-            default: The default value to return if the key is not found
-            
-        Returns:
-            The value from the config, or the default value if not found
-        """
-        try:
-            # Check if this is a RecursiveDict (mautrix config type)
-            if 'RecursiveDict' in str(type(self)):
-                # RecursiveDict requires the default value as a positional argument
-                try:
-                    return self.get(key, default)
-                except TypeError:
-                    # If the signature is different, try with positional args
-                    try:
-                        if key in self:
-                            return self[key]
-                        else:
-                            return default
-                    except Exception:
-                        return default
-            elif hasattr(self, 'get'):
-                # Standard dict-like get method
-                return self.get(key, default)
-            elif isinstance(self, dict) and key in self:
-                return self[key]
-            else:
-                return default
-        except Exception as e:
-            logger.warning(f"Error getting config value for key {key}: {e}")
-            return default
+
 
     def validate_config(self):
         """Validate critical configuration parameters with format validation."""
@@ -262,7 +227,7 @@ class Config(BaseProxyConfig):
         
         missing = []
         for param, desc, validator in critical_params:
-            value = self.safe_config_get(param)
+            value = self.get(param, None)
             if not value or not validator(value):
                 missing.append(desc)
         
@@ -271,7 +236,7 @@ class Config(BaseProxyConfig):
             return False
         
         # Validate AI model specific config
-        ai_model_type = self.safe_config_get("ai_model_type", "none")
+        ai_model_type = self.get("ai_model_type", "none")
         if ai_model_type != "none":
             if not self._validate_ai_config(ai_model_type):
                 return False
@@ -293,7 +258,7 @@ class Config(BaseProxyConfig):
         missing = []
         for field in required_fields[model_type]:
             config_key = f"{model_type}.{field}"
-            value = self.safe_config_get(config_key)
+            value = self.get(config_key, None)
             if not value or (isinstance(value, str) and len(value.strip()) == 0):
                 missing.append(field)
         
@@ -303,7 +268,7 @@ class Config(BaseProxyConfig):
         
         # Additional validation for specific fields
         if model_type in ["openai", "google", "local"]:
-            endpoint = self.safe_config_get(f"{model_type}.api_endpoint")
+            endpoint = self.get(f"{model_type}.api_endpoint", None)
             if endpoint and not endpoint.startswith("http"):
                 logger.error(f"Invalid API endpoint for {model_type}: must start with http")
                 return False
@@ -319,39 +284,9 @@ class AIIntegration:
     def __init__(self, config, log):
         self.config = config
         self.logger = log  # Change logger to self.logger
-        self.target_audience = self.safe_config_get("target_audience", "community members")
+        self.target_audience = self.config.get("target_audience", "community members")
         # Initialize Discourse API
         self.discourse_api = DiscourseAPI(self.config, log)  # Pass log directly
-
-    def safe_config_get(self, key: str, default=None):
-        """
-        Safely get a value from the config, handling RecursiveDict properly.
-        """
-        try:
-            # Check if this is a RecursiveDict (mautrix config type)
-            if 'RecursiveDict' in str(type(self.config)):
-                # RecursiveDict requires the default value as a positional argument
-                try:
-                    return self.config.get(key, default)
-                except TypeError:
-                    # If the signature is different, try with positional args
-                    try:
-                        if key in self.config:
-                            return self.config[key]
-                        else:
-                            return default
-                    except Exception:
-                        return default
-            elif hasattr(self.config, 'get'):
-                # Standard dict-like get method
-                return self.config.get(key, default)
-            elif isinstance(self.config, dict) and key in self.config:
-                return self.config[key]
-            else:
-                return default
-        except Exception as e:
-            self.logger.warning(f"Error getting config value for key {key}: {e}")
-            return default
 
     def clean_markdown_from_title(self, title: str) -> str:
         """Remove markdown formatting from a title."""
@@ -374,7 +309,7 @@ class AIIntegration:
         return title.strip()
 
     async def generate_title(self, message_body: str, use_links_prompt: bool = False) -> Optional[str]:
-        ai_model_type = self.safe_config_get("ai_model_type", "none")
+        ai_model_type = self.config.get("ai_model_type", "none")
 
         if ai_model_type == "openai":
             return await self.generate_openai_title(message_body, use_links_prompt)
@@ -389,7 +324,7 @@ class AIIntegration:
     async def generate_links_title(self, message_body: str) -> Optional[str]:
         """Create a title focusing on linked content."""
         prompt = f"Create a concise and relevant title for the following content, focusing on the key message and linked content:\n\n{message_body}"
-        ai_model_type = self.safe_config_get("ai_model_type", "none")
+        ai_model_type = self.config.get("ai_model_type", "none")
 
         if ai_model_type == "openai":
             return await self.generate_openai_title(prompt, True)
@@ -409,7 +344,7 @@ class AIIntegration:
             # Otherwise, use the standard summary prompt
             prompt = f"""Summarize the following content, including any user-provided context or quotes. If there isn't enough information, please just say 'Not Enough Information to Summarize':\n\nContent:\n{content}\n\nUser Message:\n{user_message}"""
         
-        ai_model_type = self.safe_config_get("ai_model_type", "none")
+        ai_model_type = self.config.get("ai_model_type", "none")
         if ai_model_type == "openai":
             return await self.summarize_with_openai(prompt)
         elif ai_model_type == "local":
@@ -454,7 +389,7 @@ class AIIntegration:
             # Create prompt with existing tags context accepts tag list and content , pass user message for context
             prompt = self.TAG_PROMPT.format(tag_list=tag_list, user_message=user_message)
 
-            ai_model_type = self.safe_config_get("ai_model_type", "none")
+            ai_model_type = self.config.get("ai_model_type", "none")
             
             if ai_model_type == "openai":
                 return await self._generate_tags_openai(prompt)
@@ -493,7 +428,7 @@ class AIIntegration:
 
             timeout = aiohttp.ClientTimeout(total=30)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(self.config.get("openai.api_endpoint"), headers=headers, json=data) as response:
+                async with session.post(self.config.get("openai.api_endpoint", ""), headers=headers, json=data) as response:
                     response_text = await response.text()
                     try:
                         response_json = json.loads(response_text)
@@ -543,7 +478,7 @@ class AIIntegration:
 
             timeout = aiohttp.ClientTimeout(total=60)  # Longer timeout for local models
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(self.config.get("local_llm.api_endpoint"), headers=headers, json=data) as response:
+                async with session.post(self.config.get("local_llm.api_endpoint", ""), headers=headers, json=data) as response:
                     response_text = await response.text()
                     try:
                         response_json = json.loads(response_text)
@@ -592,7 +527,7 @@ class AIIntegration:
 
             timeout = aiohttp.ClientTimeout(total=30)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(self.config.get("google.api_endpoint"), headers=headers, json=data) as response:
+                async with session.post(self.config.get("google.api_endpoint", ""), headers=headers, json=data) as response:
                     response_text = await response.text()
                     try:
                         response_json = json.loads(response_text)
@@ -678,14 +613,14 @@ class AIIntegration:
             }
 
             data = {
-                "model": self.config["openai.model"],
+                "model": self.config.get("openai.model", "gpt-4o-mini"),
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": min(self.config["openai.max_tokens"], 100),  # Limit to 100 tokens for title
-                "temperature": self.config["openai.temperature"],
+                "max_tokens": min(self.config.get("openai.max_tokens", 500), 100),  # Limit to 100 tokens for title
+                "temperature": self.config.get("openai.temperature", 0.7),
             }
 
             async with aiohttp.ClientSession() as session:
-                async with session.post(self.config["openai.api_endpoint"], headers=headers, json=data) as response:
+                async with session.post(self.config.get("openai.api_endpoint", ""), headers=headers, json=data) as response:
                     response_text = await response.text()
                     try:
                         response_json = json.loads(response_text)
@@ -739,14 +674,14 @@ class AIIntegration:
             }
 
             data = {
-                "model": self.config["openai.model"],
+                "model": self.config.get("openai.model", "gpt-4o-mini"),
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": self.config["openai.max_tokens"],
-                "temperature": self.config["openai.temperature"],
+                "max_tokens": self.config.get("openai.max_tokens", 500),
+                "temperature": self.config.get("openai.temperature", 0.7),
             }
 
             async with aiohttp.ClientSession() as session:
-                async with session.post(self.config["openai.api_endpoint"], headers=headers, json=data) as response:
+                async with session.post(self.config.get("openai.api_endpoint", ""), headers=headers, json=data) as response:
                     response_text = await response.text()
                     try:
                         response_json = json.loads(response_text)
@@ -805,7 +740,7 @@ class AIIntegration:
             }
 
             async with aiohttp.ClientSession() as session:
-                async with session.post(self.config["local_llm.api_endpoint"], headers=headers, json=data) as response:
+                async with session.post(self.config.get("local_llm.api_endpoint", ""), headers=headers, json=data) as response:
                     response_text = await response.text()
                     try:
                         response_json = json.loads(response_text)
@@ -871,7 +806,7 @@ class AIIntegration:
             }
 
             async with aiohttp.ClientSession() as session:
-                async with session.post(self.config["local_llm.api_endpoint"], headers=headers, json=data) as response:
+                async with session.post(self.config.get("local_llm.api_endpoint", ""), headers=headers, json=data) as response:
                     response_text = await response.text()
                     try:
                         response_json = json.loads(response_text)
@@ -940,16 +875,16 @@ class AIIntegration:
             }
             
             data = {
-                "model": self.config["google.model"],
+                "model": self.config.get("google.model", "gemini-1.5-pro"),
                 "contents": [{"role": "user", "parts": [{"text": prompt}]}],
                 "generationConfig": {
-                    "maxOutputTokens": min(self.config["google.max_tokens"], 100),  # Limit to 100 tokens for title
-                    "temperature": self.config["google.temperature"],
+                    "maxOutputTokens": min(self.config.get("google.max_tokens", 500), 100),  # Limit to 100 tokens for title
+                    "temperature": self.config.get("google.temperature", 0.7),
                 }
             }
 
             async with aiohttp.ClientSession() as session:
-                async with session.post(self.config["google.api_endpoint"], headers=headers, json=data) as response:
+                async with session.post(self.config.get("google.api_endpoint", ""), headers=headers, json=data) as response:
                     response_text = await response.text()
                     try:
                         response_json = json.loads(response_text)
@@ -1003,16 +938,16 @@ class AIIntegration:
             }
             
             data = {
-                "model": self.config["google.model"],
+                "model": self.config.get("google.model", "gemini-1.5-pro"),
                 "contents": [{"role": "user", "parts": [{"text": prompt}]}],
                 "generationConfig": {
-                    "maxOutputTokens": self.config["google.max_tokens"],
-                    "temperature": self.config["google.temperature"],
+                    "maxOutputTokens": self.config.get("google.max_tokens", 500),
+                    "temperature": self.config.get("google.temperature", 0.7),
                 }
             }
 
             async with aiohttp.ClientSession() as session:
-                async with session.post(self.config["google.api_endpoint"], headers=headers, json=data) as response:
+                async with session.post(self.config.get("google.api_endpoint", ""), headers=headers, json=data) as response:
                     response_text = await response.text()
                     try:
                         response_json = json.loads(response_text)
@@ -1118,9 +1053,9 @@ class DiscourseAPI:
         self.logger = log  # Change logger to self.logger
         
         # Ensure we have the required configuration
-        self.base_url = config.get("discourse_base_url", None)
-        self.api_key = config.get("discourse_api_key", None)
-        self.api_username = config.get("discourse_api_username", None)
+        self.base_url = self.config.get("discourse_base_url", None)
+        self.api_key = self.config.get("discourse_api_key", None)
+        self.api_username = self.config.get("discourse_api_username", None)
         
         if not self.base_url or not self.api_key or not self.api_username:
             self.logger.error("Missing required Discourse configuration. Please check your config file.")
@@ -1180,9 +1115,9 @@ class DiscourseAPI:
                 
                 if response.status == 200:
                     # Extract the post URL from the response
-                    post_id = response_json.get("id")
-                    topic_id = response_json.get("topic_id")
-                    topic_slug = response_json.get("topic_slug")
+                    post_id = response_json.get("id", None)
+                    topic_id = response_json.get("topic_id", None)
+                    topic_slug = response_json.get("topic_slug", None)
                     
                     if post_id and topic_id and topic_slug:
                         post_url = f"{self.base_url}/t/{topic_slug}/{topic_id}"
@@ -1235,12 +1170,12 @@ class DiscourseAPI:
                     if "topics" in response_json and response_json["topics"]:
                         for topic in response_json["topics"]:
                             # Get the topic content and check if it contains the URL
-                            topic_id = topic.get("id")
-                            # Check if the topic has the URL in its content
-                            if "id" in topic and "slug" in topic:
-                                topic_url = f"{self.base_url}/t/{topic['slug']}/{topic['id']}"
-                                self.logger.info(f"Duplicate post found: {topic_url}")
-                                return True, topic_url
+                            topic_id = topic.get("id", None)
+                                                    # Check if the topic has the URL in its content
+                        if "id" in topic and "slug" in topic:
+                            topic_url = f"{self.base_url}/t/{topic['slug']}/{topic['id']}"
+                            self.logger.info(f"Duplicate post found: {topic_url}")
+                            return True, topic_url
             
             # If no direct match, try searching for posts with the tag
             params = {"q": f"tags:{tag}"}
@@ -1257,8 +1192,8 @@ class DiscourseAPI:
                     # Check each post for the normalized URL in its "raw" content
                     for post in response_json.get("posts", []):
                         raw_content = post.get("raw", "")
-                        post_id = post.get("id")
-                        topic_id = post.get("topic_id")
+                        post_id = post.get("id", None)
+                        topic_id = post.get("topic_id", None)
                         
                         # Check for various URL formats that might be in the content
                         url_variations = [
@@ -1862,7 +1797,7 @@ class MatrixToDiscourseBot(Plugin):
         
         self.ai_integration = AIIntegration(self.config, logger)
         self.discourse_api = DiscourseAPI(self.config, logger)
-        self.target_audience = self.safe_config_get("target_audience", "community members")
+        self.target_audience = self.config.get("target_audience", "community members")
         
         # Dictionary to map Matrix message IDs to Discourse post IDs
         self.message_id_map = {}
@@ -1881,47 +1816,10 @@ class MatrixToDiscourseBot(Plugin):
         self._lock_cleanup_task = asyncio.create_task(self._cleanup_old_locks())
         
         # Log configuration status
-        logger.info(f"AI model type: {self.safe_config_get('ai_model_type', 'none')}")
-        logger.info(f"URL listening enabled: {self.safe_config_get('url_listening', False)}")
-        logger.info(f"Discourse base URL: {self.safe_config_get('discourse_base_url', 'not configured')}")
+        logger.info(f"AI model type: {self.config.get('ai_model_type', 'none')}")
+        logger.info(f"URL listening enabled: {self.config.get('url_listening', False)}")
+        logger.info(f"Discourse base URL: {self.config.get('discourse_base_url', 'not configured')}")
         logger.info("MatrixToDiscourseBot initialization completed")
-    
-    def safe_config_get(self, key: str, default=None):
-        """
-        Safely get a value from the config, handling RecursiveDict properly.
-        
-        Args:
-            key (str): The config key to get
-            default: The default value to return if the key is not found
-            
-        Returns:
-            The value from the config, or the default value if not found
-        """
-        try:
-            # Check if this is a RecursiveDict (mautrix config type)
-            if 'RecursiveDict' in str(type(self.config)):
-                # RecursiveDict requires the default value as a positional argument
-                try:
-                    return self.config.get(key, default)
-                except TypeError:
-                    # If the signature is different, try with positional args
-                    try:
-                        if key in self.config:
-                            return self.config[key]
-                        else:
-                            return default
-                    except Exception:
-                        return default
-            elif hasattr(self.config, 'get'):
-                # Standard dict-like get method
-                return self.config.get(key, default)
-            elif isinstance(self.config, dict) and key in self.config:
-                return self.config[key]
-            else:
-                return default
-        except Exception as e:
-            logger.warning(f"Error getting config value for key {key}: {e}")
-            return default
 
     async def stop(self) -> None:
         logger.info("Stopping MatrixToDiscourseBot...")
@@ -2066,15 +1964,15 @@ class MatrixToDiscourseBot(Plugin):
     def get_db_upgrade_table(cls) -> UpgradeTable:
         return upgrade_table
     # Command to handle the help event
-    @command.new(name=lambda self: self.safe_config_get("help_trigger", "help"), require_subcommand=False)
+    @command.new(name=lambda self: self.config.get("help_trigger", "help"), require_subcommand=False)
     async def help_command(self, evt: MessageEvent) -> None:
         await self.handle_help(evt)
 
     async def handle_help(self, evt: MessageEvent) -> None:
-        help_trigger = self.safe_config_get("help_trigger", "help")
-        post_trigger = self.safe_config_get("post_trigger", "fpost")
-        search_trigger = self.safe_config_get("search_trigger", "search")
-        url_post_trigger = self.safe_config_get("url_post_trigger", "url")
+        help_trigger = self.config.get("help_trigger", "help")
+        post_trigger = self.config.get("post_trigger", "fpost")
+        search_trigger = self.config.get("search_trigger", "search")
+        url_post_trigger = self.config.get("url_post_trigger", "url")
         
         logger.info(f"Command !{help_trigger} triggered.")
         help_msg = (
@@ -2161,7 +2059,7 @@ class MatrixToDiscourseBot(Plugin):
     @event.on(EventType.ROOM_MESSAGE)
     async def handle_message(self, evt: MessageEvent) -> None:
         # If URL listening is disabled, don't process URL patterns.
-        if not self.safe_config_get("url_listening", False):
+        if not self.config.get("url_listening", False):
             return
 
         if evt.sender == self.client.mxid:
@@ -2205,7 +2103,7 @@ class MatrixToDiscourseBot(Plugin):
                 logger.error(f"Error processing message {evt.event_id}: {e}", exc_info=True)
 
     # Command to process URLs in replies
-    @command.new(name=lambda self: self.safe_config_get("url_post_trigger", "url"), require_subcommand=False)
+    @command.new(name=lambda self: self.config.get("url_post_trigger", "url"), require_subcommand=False)
     async def post_url_to_discourse_command(self, evt: MessageEvent) -> None:
         await self.handle_post_url_to_discourse(evt)
 
@@ -2376,7 +2274,7 @@ class MatrixToDiscourseBot(Plugin):
                     f"For more on bypassing paywalls, see the [post on bypassing methods](https://forum.irregularchat.com/t/bypass-links-and-methods/98?u=sac)"
                 )
 
-                # Determine category ID based on room ID using the safe_config_get helper
+                # Determine category ID based on room ID using the config.get helper
                 try:
                     # Get the mapping dictionary with a default empty dict
                     matrix_to_discourse_topic = self.config.get("matrix_to_discourse_topic", {})
