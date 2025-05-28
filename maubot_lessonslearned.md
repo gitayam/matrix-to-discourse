@@ -17,7 +17,8 @@ This document captures key lessons learned during the development and maintenanc
 11. [Service Integration and Inter-Service Communication](#service-integration-and-inter-service-communication)
 12. [Matrix Message Handling, Encryption, and Security](#matrix-message-handling-encryption-and-security)
 13. [Text Transformation and Replacement Patterns](#text-transformation-and-replacement-patterns)
-14. [Standard Operating Procedures](#standard-operating-procedures)
+14. [Configuration Access Patterns and RecursiveDict Handling](#configuration-access-patterns-and-recursivedict-handling)
+15. [Standard Operating Procedures](#standard-operating-procedures)
 
 -----
 
@@ -2901,7 +2902,151 @@ class CommandPlugin(Plugin):
 
 -----
 
-## 14\. Standard Operating Procedures
+## 14\. Configuration Access Patterns and RecursiveDict Handling
+
+### ❌ What Didn't Work
+
+**Problem**: Inconsistent configuration access patterns causing runtime errors.
+
+- Mixing `self.safe_config_get("key", default)` wrapper methods with direct `self.config["key"]` access
+- Not understanding the difference between RecursiveDict and standard Python dictionaries
+- Creating recursive calls in safe wrapper methods (`self.safe_config_get` calling itself)
+- Using wrong method signatures for RecursiveDict objects
+
+**Real-world impact observed**:
+- "405 Method Not Allowed" API errors due to configuration values not being loaded correctly
+- "maximum recursion depth exceeded" errors from recursive safe_config_get methods
+- "RecursiveDict.get() missing 1 required positional argument" TypeErrors
+- Silent failures where configuration values returned None instead of expected values
+
+### ✅ What Worked
+
+**Solution**: Consistent configuration access patterns with proper RecursiveDict handling.
+
+**Understanding RecursiveDict vs Standard Dict**:
+```python
+# Standard Python dict
+config = {"key": "value"}
+value = config.get("key", "default")  # Works with keyword argument
+
+# Maubot RecursiveDict
+config = RecursiveDict({"key": "value"})
+value = config.get("key", "default")  # Requires positional argument for default
+```
+
+**Successful Pattern 1: Direct Config Access (Recommended)**:
+```python
+class MyPlugin(Plugin):
+    def get_config_value(self, key: str, default=None):
+        """Simple, direct config access"""
+        return self.config.get(key, default)
+    
+    async def some_method(self):
+        # Consistent direct access throughout
+        api_key = self.config.get("api.key", "")
+        endpoint = self.config.get("api.endpoint", "https://api.example.com")
+        timeout = self.config.get("api.timeout", 30)
+```
+
+**Successful Pattern 2: Safe Wrapper (If Needed)**:
+```python
+class MyPlugin(Plugin):
+    def safe_config_get(self, key: str, default=None):
+        """Proper safe wrapper that doesn't recurse"""
+        try:
+            # Direct config access - no recursion
+            return self.config.get(key, default)
+        except Exception as e:
+            self.log.warning(f"Error getting config value for key {key}: {e}")
+            return default
+    
+    async def some_method(self):
+        # Use wrapper consistently throughout
+        api_key = self.safe_config_get("api.key", "")
+        endpoint = self.safe_config_get("api.endpoint", "https://api.example.com")
+```
+
+**Configuration Class Pattern**:
+```python
+class Config(BaseProxyConfig):
+    def safe_get(self, key: str, default=None):
+        """Safe config access in Config class"""
+        try:
+            # Use self.get() directly - this is the actual RecursiveDict
+            return self.get(key, default)
+        except Exception as e:
+            logger.warning(f"Error getting config value for key {key}: {e}")
+            return default
+    
+    def do_update(self, helper: ConfigUpdateHelper) -> None:
+        helper.copy("api.key")
+        helper.copy("api.endpoint")
+        helper.copy("api.timeout")
+```
+
+### 🔧 Standard Operating Procedure
+
+1. **Choose ONE configuration access pattern** and use it consistently throughout the entire codebase
+2. **Understand your config object type**: Check if you're working with RecursiveDict vs standard dict
+3. **Avoid mixing patterns**: Don't use both safe wrappers AND direct access in the same plugin
+4. **Test configuration loading early**: Verify config values are retrieved correctly during plugin startup
+5. **Use proper error handling**: Include actual config values in error logs for debugging
+6. **Document your pattern**: Make it clear which approach your plugin uses
+
+**Recommended approach for new plugins**:
+```python
+class MyPlugin(Plugin):
+    async def start(self) -> None:
+        # Load and validate config early
+        self.config.load_and_update()
+        
+        # Test critical config values
+        api_key = self.config.get("api.key", "")
+        if not api_key:
+            self.log.error("API key not configured")
+            return
+            
+        self.log.info("Configuration loaded successfully")
+    
+    def get_config(self, key: str, default=None):
+        """Single point of config access"""
+        return self.config.get(key, default)
+```
+
+**Configuration debugging tips**:
+```python
+# Add debug logging for config values (sanitize sensitive data)
+def debug_config(self):
+    """Debug configuration loading"""
+    self.log.debug(f"Config type: {type(self.config)}")
+    
+    # Test a known config key
+    test_value = self.config.get("test_key", "DEFAULT")
+    self.log.debug(f"Test config access: {test_value}")
+    
+    # Log non-sensitive config keys
+    for key in ["api.endpoint", "timeout", "enabled"]:
+        value = self.config.get(key, "NOT_SET")
+        self.log.debug(f"Config {key}: {value}")
+```
+
+### Common Configuration Errors and Solutions
+
+**Error**: `RecursiveDict.get() missing 1 required positional argument: 'default_value'`
+**Solution**: Use `config.get(key, default)` with positional arguments, not keyword arguments
+
+**Error**: `maximum recursion depth exceeded`
+**Solution**: Check that safe_config_get methods don't call themselves recursively
+
+**Error**: API calls failing with 405/401 errors despite correct endpoints
+**Solution**: Verify configuration values are actually being loaded (often they're None/empty)
+
+**Error**: Configuration changes not taking effect
+**Solution**: Call `self.config.load_and_update()` in start() method and after config changes
+
+-----
+
+## 15\. Standard Operating Procedures
 
 ### Plugin Development Workflow
 
@@ -2932,30 +3077,49 @@ class CommandPlugin(Plugin):
     - Use semantic versioning (e.g., 1.0.9 → 1.0.10 for bug fixes, 1.0.10 → 1.1.0 for features)
     - Version must be incremented for each release to avoid conflicts
 
-2.  **Build Process**:
+2.  **Automated Testing and Build Process**:
     ```bash
     # Increment version in plugin/maubot.yaml first
-    # Then build using the script
+    # Then build using the script (includes automatic testing)
     python3 build_plugin.py -v
+    
+    # To skip tests (not recommended):
+    python3 build_plugin.py -v --skip-tests
+    
+    # To run tests only:
+    python3 test_plugin.py
     ```
     
 3.  **Build Script Benefits**:
+    - **Automatically runs validation tests** before building
+    - Catches import errors, syntax issues, and configuration problems
     - Automatically includes all required files based on `maubot.yaml`
-    - Generates proper filename with version (e.g., `may.irregularchat.matrix_to_discourse-v1.0.10.mbp`)
+    - Generates proper filename with version (e.g., `may.irregularchat.matrix_to_discourse-v1.0.11.mbp`)
     - Validates plugin structure before building
     - Provides verbose output for debugging build issues
 
-4.  **What Gets Included**:
+4.  **Validation Tests Include**:
+    - **Import validation**: Catches relative import errors (`from .module` vs `from module`)
+    - **Syntax checking**: Validates Python syntax in all modules
+    - **Configuration validation**: Checks `maubot.yaml` and `base-config.yaml` structure
+    - **Module loading order**: Ensures dependencies are loaded before modules that import them
+    - **File existence**: Verifies all referenced files exist
+    - **Common patterns**: Checks for proper Plugin inheritance, start/stop methods, logging usage
+
+5.  **What Gets Included**:
     - All modules listed in `maubot.yaml`
     - `base-config.yaml` if config is enabled
     - Extra files specified in `extra_files`
     - Proper directory structure for multi-module plugins
 
-5.  **Common Build Issues**:
+6.  **Common Build Issues Caught by Tests**:
+    - **Relative imports**: `from .db import` → `from db import`
     - **Missing modules**: Ensure all Python files are listed in `modules`
     - **Wrong main_class**: Must match actual class name and module structure
     - **Missing dependencies**: List all required packages in `dependencies`
     - **File not found**: Check `extra_files` paths are correct
+    - **Module loading order**: Dependencies must be listed before modules that import them
+    - **Syntax errors**: Python syntax issues in any module
 
 ### Critical Event Handler Issues
 
@@ -3024,6 +3188,9 @@ async def handle_message(self, evt: MessageEvent) -> None:
   - [ ] Sensitive information is handled via configuration, not hardcoded.
   - [ ] **Version incremented in `maubot.yaml` before each build**.
   - [ ] **Plugin built using `build_plugin.py` script, not manual zip commands**.
+  - [ ] **All validation tests pass before building** (`python3 test_plugin.py`).
+  - [ ] **No relative imports used** (use `from module import` not `from .module import`).
+  - [ ] **Module loading order correct** (dependencies listed before modules that import them).
 
 ### Testing Strategy
 
